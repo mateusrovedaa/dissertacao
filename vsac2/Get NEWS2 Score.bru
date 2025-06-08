@@ -1,0 +1,24 @@
+meta {
+  name: Calculate NEWS2 Score
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:8000/news2
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "rr": 18,
+    "spo2": 93,
+    "spo2_scale": 1,
+    "on_o2": false,
+    "temp": 37.2,
+    "sys_bp": 105,
+    "hr": 95,
+    "consciousness": "A"
+  }
+}
