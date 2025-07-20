@@ -1,145 +1,139 @@
 # compressors.py
-
 import json
 import heapq
-from collections import defaultdict
+from collections import defaultdict, Counter
+
+class SwingingDoorCompressor:
+    """
+    Implementa o algoritmo de compressão Swinging Door Trending (SDT).
+    Este algoritmo é 'lossy' (com perdas) e é eficaz para comprimir
+    séries temporais, preservando os picos e vales importantes.
+    """
+    def compress(self, time_series, dc_deviation, t_sdt_max_interval):
+        if not time_series:
+            return []
+
+        archived_points = [time_series[0]]
+        anchor_point = time_series[0]
+        
+        upper_slope = float('inf')
+        lower_slope = float('-inf')
+
+        for i in range(1, len(time_series)):
+            current_point = time_series[i]
+            time_delta = current_point[0] - anchor_point[0]
+            
+            if time_delta <= 0:
+                continue
+
+            if time_delta > t_sdt_max_interval:
+                if time_series[i-1] not in archived_points:
+                    archived_points.append(time_series[i-1])
+                
+                anchor_point = time_series[i-1]
+                upper_slope = float('inf')
+                lower_slope = float('-inf')
+                time_delta = current_point[0] - anchor_point[0]
+                if time_delta <= 0: continue
+
+            slope = (current_point[1] - anchor_point[1]) / time_delta
+            
+            new_upper_slope = (current_point[1] + dc_deviation - anchor_point[1]) / time_delta
+            new_lower_slope = (current_point[1] - dc_deviation - anchor_point[1]) / time_delta
+
+            upper_slope = min(upper_slope, new_upper_slope)
+            lower_slope = max(lower_slope, new_lower_slope)
+
+            if slope > upper_slope or slope < lower_slope:
+                if time_series[i-1] not in archived_points:
+                    archived_points.append(time_series[i-1])
+                anchor_point = time_series[i-1]
+                upper_slope = float('inf')
+                lower_slope = float('-inf')
+
+        if time_series[-1] not in archived_points:
+            archived_points.append(time_series[-1])
+
+        return archived_points
 
 class LZW:
-    """
-    Classe para compressão/descompressão LZW em memória.
-    Lógica adaptada para operar com strings e retornar/receber listas de inteiros.
-    """
-    def compress(self, data_str: str) -> list[int]:
-        data_bytes = data_str.encode('utf-8')
-        dictionary_size = 256
-        dictionary = {bytes([i]): i for i in range(dictionary_size)}
+    """Implementação do algoritmo de compressão LZW."""
+    def compress(self, uncompressed_string: str) -> list[int]:
+        dict_size = 256
+        dictionary = {chr(i): i for i in range(dict_size)}
         
+        w = ""
         result = []
-        p = b""
-        for c_byte in data_bytes:
-            c = bytes([c_byte])
-            pc = p + c
-            if pc in dictionary:
-                p = pc
+        for c in uncompressed_string:
+            wc = w + c
+            if wc in dictionary:
+                w = wc
             else:
-                result.append(dictionary[p])
-                dictionary[pc] = dictionary_size
-                dictionary_size += 1
-                p = c
-        if p:
-            result.append(dictionary[p])
+                result.append(dictionary[w])
+                dictionary[wc] = dict_size
+                dict_size += 1
+                w = c
+        
+        if w:
+            result.append(dictionary[w])
         return result
 
-    def decompress(self, data_codes: list[int]) -> str:
-        dictionary_size = 256
-        dictionary = {i: bytes([i]) for i in range(dictionary_size)}
+    def decompress(self, compressed_data: list[int]) -> str:
+        dict_size = 256
+        dictionary = {i: chr(i) for i in range(dict_size)}
         
-        if not data_codes:
-            return ""
-            
-        p = dictionary[data_codes.pop(0)]
-        result_bytes = p
+        result = []
+        w = chr(compressed_data.pop(0))
+        result.append(w)
         
-        for code in data_codes:
-            if code in dictionary:
-                entry = dictionary[code]
-            elif code == dictionary_size:
-                entry = p + p[:1]
+        for k in compressed_data:
+            if k in dictionary:
+                entry = dictionary[k]
+            elif k == dict_size:
+                entry = w + w[0]
             else:
-                raise ValueError(f'Erro na descompressão LZW: código {code} inválido')
+                raise ValueError(f"Bad compressed k: {k}")
             
-            result_bytes += entry
-            dictionary[dictionary_size] = p + entry[:1]
-            dictionary_size += 1
-            p = entry
+            result.append(entry)
+            dictionary[dict_size] = w + entry[0]
+            dict_size += 1
+            w = entry
             
-        return result_bytes.decode('utf-8')
-
+        return "".join(result)
 
 class Huffman:
-    """
-    Classe para compressão/descompressão Huffman, adequada para uso como biblioteca.
-    """
-    class HeapNode:
-        def __init__(self, char, freq):
-            self.char = char
-            self.freq = freq
-            self.left = None
-            self.right = None
-        
-        def __lt__(self, other):
-            return self.freq < other.freq
-
-    def _make_frequency_dict(self, text):
-        return defaultdict(int, {char: text.count(char) for char in set(text)})
-
-    def _make_heap(self, frequency):
-        return [self.HeapNode(key, frequency[key]) for key in frequency]
-
-    def _merge_nodes(self, heap):
+    """Implementação do algoritmo de compressão Huffman."""
+    def _build_tree(self, frequencies):
+        heap = [[weight, [char, ""]] for char, weight in frequencies.items()]
         heapq.heapify(heap)
         while len(heap) > 1:
-            node1 = heapq.heappop(heap)
-            node2 = heapq.heappop(heap)
-            merged = self.HeapNode(None, node1.freq + node2.freq)
-            merged.left = node1
-            merged.right = node2
-            heapq.heappush(heap, merged)
-        return heap[0]
+            lo = heapq.heappop(heap)
+            hi = heapq.heappop(heap)
+            for pair in lo[1:]:
+                pair[1] = '0' + pair[1]
+            for pair in hi[1:]:
+                pair[1] = '1' + pair[1]
+            heapq.heappush(heap, [lo[0] + hi[0]] + lo[1:] + hi[1:])
+        return sorted(heapq.heappop(heap)[1:], key=lambda p: (len(p[-1]), p))
 
-    def _make_codes_helper(self, root, current_code, codes_dict):
-        if root is None:
-            return
-        if root.char is not None:
-            codes_dict[root.char] = current_code
-            return
-        self._make_codes_helper(root.left, current_code + "0", codes_dict)
-        self._make_codes_helper(root.right, current_code + "1", codes_dict)
-
-    def _make_codes(self, root):
-        codes_dict = {}
-        self._make_codes_helper(root, "", codes_dict)
-        return codes_dict
-
-    def compress(self, text: str):
-        frequency = self._make_frequency_dict(text)
-        heap = self._make_heap(frequency)
-        root = self._merge_nodes(heap)
-        codes = self._make_codes(root)
-        encoded_text = "".join(codes[character] for character in text)
-        return encoded_text, codes
-
-    def decompress(self, encoded_text: str, codes: dict):
-        reverse_mapping = {v: k for k, v in codes.items()}
-        current_code = ""
-        decoded_text = ""
-        for bit in encoded_text:
-            current_code += bit
-            if current_code in reverse_mapping:
-                decoded_text += reverse_mapping[current_code]
-                current_code = ""
-        return decoded_text
-
-
-class SwingingDoor:
-    """
-    Versão robusta e simplificada do SwingingDoor para tempo real.
-    Um ponto só é significativo se variar em relação ao último ponto ARQUIVADO.
-    """
-    def __init__(self, deviation):
-        self.deviation = deviation
-        self.last_archived_point = None
-
-    def compress(self, new_point):
-        # O primeiro ponto é sempre arquivado para ter uma referência.
-        if self.last_archived_point is None:
-            self.last_archived_point = new_point
-            return [new_point]
-
-        # Verifica a variação em relação ao último ponto que foi salvo.
-        if abs(new_point[1] - self.last_archived_point[1]) >= self.deviation:
-            self.last_archived_point = new_point
-            return [new_point]
+    def compress(self, uncompressed_string: str) -> dict:
+        frequencies = Counter(uncompressed_string)
+        huffman_tree = self._build_tree(frequencies)
+        codes = {char: code for char, code in huffman_tree}
         
-        # Se a variação for menor que o desvio, o ponto não é significativo.
-        return []
+        encoded_string = "".join(codes[char] for char in uncompressed_string)
+        
+        return {"payload": encoded_string, "codes": codes}
+
+    def decompress(self, encoded_string: str, codes: dict) -> str:
+        reverse_codes = {v: k for k, v in codes.items()}
+        current_code = ""
+        decoded_string = []
+        
+        for bit in encoded_string:
+            current_code += bit
+            if current_code in reverse_codes:
+                decoded_string.append(reverse_codes[current_code])
+                current_code = ""
+                
+        return "".join(decoded_string)

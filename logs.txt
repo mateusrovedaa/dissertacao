@@ -1,0 +1,13 @@
+[PACIENTE] Dataset 'dataset.csv' carregado com 30 registros.
+==================================================
+Iniciando Simulação do Protótipo ViSPAC - Dispositivo de Borda
+Paciente: PID-001, Risco Inicial: MÍNIMO
+==================================================
+[18:33:59] Monitorando... FC: 82.0, SpO2: 98.0 | IC FC: 600s, IC SpO2: 900s
+[18:34:10] Monitorando... FC: 98.0, SpO2: 94.0 | IC FC: 600s, IC SpO2: 900s
+[18:34:20] Monitorando... FC: 100.0, SpO2: 96.0 | IC FC: 600s, IC SpO2: 900s
+[18:34:30] Monitorando... FC: 82.0, SpO2: 98.0 | IC FC: 600s, IC SpO2: 900s
+[18:34:40] Monitorando... FC: 98.0, SpO2: 94.0 | IC FC: 600s, IC SpO2: 900s
+[18:34:50] Monitorando... FC: 100.0, SpO2: 96.0 | IC FC: 600s, IC SpO2: 900s
+[18:35:00] Monitorando... FC: 82.0, SpO2: 98.0 | IC FC: 600s, IC SpO2: 900s
+[18:35:10] Monitorando... FC: 98.0, SpO2: 94.0 | IC FC: 600s, IC SpO2: 900s
