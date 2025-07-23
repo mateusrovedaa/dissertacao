@@ -75,9 +75,10 @@ async def upload_batch(req: Request) -> Dict[str, Any]:
             payload = LZW().decompress(raw.decode())
         elif ctype=="huffman":
             data = json.loads(raw)
-            payload = Huffman().decompress(data["payload"], data["codes"])
+            payload = Huffman().decompress(data["payload"], data["codes"], data.get("padding", 0))
         else:
             payload = raw.decode()
+        #print(payload)
         batch = json.loads(payload)
     except Exception as e:
         raise HTTPException(400, f"Falha ao decodificar lote: {e}")
