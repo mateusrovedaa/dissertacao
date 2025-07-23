@@ -1,6 +1,6 @@
 # news2_api.py
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 import uvicorn
@@ -9,16 +9,18 @@ from compressors import LZW, Huffman
 
 app = FastAPI(title="ViSPAC Scoring & Decompression API")
 
+# Modelo Pydantic atualizado para ser mais robusto, com valores padrão
 class Vitals(BaseModel):
-    rr: float
-    spo2: float
+    rr: float = 18
+    spo2: float = 98
     spo2_scale: int = 1
     on_o2: bool = False
-    temp: float
-    sys_bp: float
-    hr: float
-    consciousness: str
+    temp: float = 36.5
+    sys_bp: float = 120
+    hr: float = 80
+    consciousness: str = "A"
 
+# --- Funções de Cálculo de Escore (sem alterações) ---
 def score_rr(rr: float) -> int:
     if rr <= 8: return 3
     if 9 <= rr <= 11: return 1
@@ -70,43 +72,82 @@ def score_consciousness(level: str) -> int:
 
 @app.post("/news2")
 def calculate_news2(v: Vitals) -> Dict[str, Any]:
+    """Calcula o escore NEWS2 para um conjunto de sinais vitais."""
     scores = {
-        "respiratory_rate": score_rr(v.rr), "oxygen_saturation": score_spo2(v.spo2, v.spo2_scale, v.on_o2),
-        "supplemental_o2": score_o2_supplemental(v.on_o2), "temperature": score_temp(v.temp),
-        "systolic_bp": score_sys_bp(v.sys_bp), "heart_rate": score_hr(v.hr),
+        "respiratory_rate": score_rr(v.rr),
+        "oxygen_saturation": score_spo2(v.spo2, v.spo2_scale, v.on_o2),
+        "supplemental_o2": score_o2_supplemental(v.on_o2),
+        "temperature": score_temp(v.temp),
+        "systolic_bp": score_sys_bp(v.sys_bp),
+        "heart_rate": score_hr(v.hr),
         "consciousness_level": score_consciousness(v.consciousness),
     }
-    scores["total"] = sum(scores.values())
-    return {"component_scores": scores, "total_score": scores["total"]}
+    total_score = sum(scores.values())
+    # A pontuação da escala 2 de SpO2 não pode ser a única a contribuir com o total se for > 0
+    if v.spo2_scale == 2 and scores["oxygen_saturation"] > 0 and total_score == scores["oxygen_saturation"]:
+        total_score = 0
 
-@app.post("/vispac/upload")
-async def handle_compressed_data(request: Request) -> Dict[str, Any]:
+    return {"component_scores": scores, "total_score": total_score}
+
+@app.post("/vispac/upload_batch")
+async def handle_compressed_batch(request: Request) -> Dict[str, Any]:
+    """
+    NOVO: Endpoint para receber, descomprimir e processar um lote de dados de pacientes.
+    """
     compression_type = request.headers.get("X-Compression-Type", "none").lower()
     body = await request.body()
+    
     try:
+        decompressed_str = ""
         if compression_type == "lzw":
-            decompressed_str = LZW().decompress(json.loads(body))
+            # O corpo é uma lista de inteiros em formato JSON string
+            compressed_list = json.loads(body)
+            decompressed_str = LZW().decompress(compressed_list)
         elif compression_type == "huffman":
+            # O corpo é um dicionário JSON com 'payload' e 'codes'
             data = json.loads(body)
             decompressed_str = Huffman().decompress(data['payload'], data['codes'])
-        else:
+        else: # "none"
             decompressed_str = body.decode('utf-8')
-        package_data = json.loads(decompressed_str)
+        
+        batch_data = json.loads(decompressed_str)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Erro no processamento do pacote: {e}")
+        raise HTTPException(status_code=400, detail=f"Erro no processamento do lote: {e}")
 
-    latest_vitals = package_data.get('data', [{}])[-1]
-    
-    # Adiciona valores default para todos os campos para garantir que o modelo Vitals não falhe
-    required_fields = Vitals.model_fields.keys()
-    for field in required_fields:
-        if field not in latest_vitals:
-            latest_vitals[field] = Vitals.model_fields[field].default
-    
-    vitals_model = Vitals(**latest_vitals)
-    score_result = calculate_news2(vitals_model)
+    scores = {}
+    print("\n--- [API] Lote Recebido para Processamento ---")
+    # Processa cada pacote de paciente no lote
+    for package in batch_data:
+        patient_id = package.get('patient_id')
+        if not patient_id:
+            continue
+        
+        # Inicia com um modelo de sinais vitais padrão
+        vitals_dict = Vitals().model_dump()
 
-    return {"patient_id": package_data.get('patient_id'), "total_score": score_result['total_score']}
+        # Verifica se é uma simulação de risco alto
+        if 'forced_vitals' in package:
+            print(f"  -> [API] Paciente {patient_id}: Detectado pacote de risco alto simulado.")
+            vitals_dict.update(package['forced_vitals'])
+        else:
+            # Pega o último valor do sinal para o cálculo do score
+            signal_type = package.get('signal')
+            if package.get('data'):
+                last_value = package['data'][-1][1]
+                vitals_dict[signal_type] = last_value
+        
+        # Cria o modelo Pydantic a partir do dicionário final
+        vitals_model = Vitals(**vitals_dict)
+        
+        # SAÍDA SOLICITADA: Mostra os valores que serão usados para o cálculo
+        print(f"  -> [API] Calculando score para {patient_id} com os valores: {vitals_model.model_dump()}")
+        
+        score_result = calculate_news2(vitals_model)
+        scores[patient_id] = score_result['total_score']
+
+    print("--- [API] Processamento do Lote Concluído ---\n")
+    return {"batch_processed": len(scores), "scores": scores}
+
 
 if __name__ == "__main__":
     uvicorn.run("news2_api:app", host="0.0.0.0", port=8000, reload=True)

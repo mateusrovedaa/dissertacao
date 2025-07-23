@@ -1,13 +1,13 @@
 # compressors.py
 import json
 import heapq
-from collections import defaultdict, Counter
+from collections import Counter
 
 class SwingingDoorCompressor:
     """
     Implementa o algoritmo de compressão Swinging Door Trending (SDT).
-    Este algoritmo é 'lossy' (com perdas) e é eficaz para comprimir
-    séries temporais, preservando os picos e vales importantes.
+    Esta implementação foi mantida por incluir a lógica do 't_sdt_max_interval',
+    um parâmetro essencial para o modelo ViSPAC.
     """
     def compress(self, time_series, dc_deviation, t_sdt_max_interval):
         if not time_series:
@@ -26,6 +26,7 @@ class SwingingDoorCompressor:
             if time_delta <= 0:
                 continue
 
+            # Verifica se o intervalo máximo de tempo foi excedido
             if time_delta > t_sdt_max_interval:
                 if time_series[i-1] not in archived_points:
                     archived_points.append(time_series[i-1])
@@ -57,8 +58,12 @@ class SwingingDoorCompressor:
         return archived_points
 
 class LZW:
-    """Implementação do algoritmo de compressão LZW."""
+    """
+    Implementação do algoritmo de compressão LZW, adaptado para operar
+    com strings em memória.
+    """
     def compress(self, uncompressed_string: str) -> list[int]:
+        """Comprime uma string em uma lista de códigos inteiros."""
         dict_size = 256
         dictionary = {chr(i): i for i in range(dict_size)}
         
@@ -79,12 +84,15 @@ class LZW:
         return result
 
     def decompress(self, compressed_data: list[int]) -> str:
+        """Descomprime uma lista de códigos inteiros em uma string."""
         dict_size = 256
         dictionary = {i: chr(i) for i in range(dict_size)}
         
-        result = []
+        if not compressed_data:
+            return ""
+            
         w = chr(compressed_data.pop(0))
-        result.append(w)
+        result = [w]
         
         for k in compressed_data:
             if k in dictionary:
@@ -102,8 +110,12 @@ class LZW:
         return "".join(result)
 
 class Huffman:
-    """Implementação do algoritmo de compressão Huffman."""
+    """
+    Implementação do algoritmo de compressão Huffman, adaptado para operar
+    com strings em memória e retornar um payload e uma tabela de códigos.
+    """
     def _build_tree(self, frequencies):
+        """Constrói a árvore de Huffman usando um min-heap."""
         heap = [[weight, [char, ""]] for char, weight in frequencies.items()]
         heapq.heapify(heap)
         while len(heap) > 1:
@@ -114,9 +126,17 @@ class Huffman:
             for pair in hi[1:]:
                 pair[1] = '1' + pair[1]
             heapq.heappush(heap, [lo[0] + hi[0]] + lo[1:] + hi[1:])
+        # Retorna a árvore de nós folha com seus códigos
         return sorted(heapq.heappop(heap)[1:], key=lambda p: (len(p[-1]), p))
 
     def compress(self, uncompressed_string: str) -> dict:
+        """
+        Comprime uma string e retorna um dicionário com o payload
+        codificado e a tabela de códigos.
+        """
+        if not uncompressed_string:
+            return {"payload": "", "codes": {}}
+            
         frequencies = Counter(uncompressed_string)
         huffman_tree = self._build_tree(frequencies)
         codes = {char: code for char, code in huffman_tree}
@@ -126,6 +146,10 @@ class Huffman:
         return {"payload": encoded_string, "codes": codes}
 
     def decompress(self, encoded_string: str, codes: dict) -> str:
+        """Descomprime uma string codificada usando a tabela de códigos fornecida."""
+        if not encoded_string:
+            return ""
+            
         reverse_codes = {v: k for k, v in codes.items()}
         current_code = ""
         decoded_string = []
