@@ -1,280 +1,217 @@
-# vispac_edge_prototype.py
-
-import time
-import random
-import json
-import requests
+import time, json, random, requests, logging, os
 import pandas as pd
-from compressors import SwingingDoorCompressor, LZW, Huffman
+from compressors import SwingingDoorCompressor, Huffman, LZW
 
-# --- Constantes e Configurações ---
-API_URL = "http://127.0.0.1:8000/vispac/upload_batch"
+# ---------------- Constantes ----------------
+API_URL      = "http://127.0.0.1:8000/vispac/upload_batch"
 DATASET_PATH = "dataset.csv"
-LOG_FILE_PATH = "simulation_log.txt"
-K_STABLE_READINGS = 3
-NUM_PATIENTS = 10
-IC_VERIF_SECS = 45 # Algoritmo 3: verificação a cada 45 segundos
+LOG_PATH     = "edge_log.txt"
+K_STABLE     = 3            # leituras estáveis
+KEEP_ALIVE   = 600          # 10 min
+HUFF_MIN, LZW_MIN = 8*1024, 32*1024
 
-# --- Configurações do Empacotador por Prioridade (Timeout = IC_min / 2) ---
 ASSEMBLER_CONFIG = {
-    "ALTO":     {"timeout": 15, "size_limit": 2 * 1024},    # IC_min = 30s
-    "MODERADO": {"timeout": 30, "size_limit": 20 * 1024},   # IC_min = 60s
-    "BAIXO":    {"timeout": 60, "size_limit": 50 * 1024},   # IC_min = 120s
-    "MÍNIMO":   {"timeout": 90, "size_limit": 50 * 1024},   # IC_min = 180s
+    "ALTO":     {"timeout": 15,  "size_limit": 5 * 1024},
+    "MODERADO": {"timeout": 60,  "size_limit": 20 * 1024},
+    "BAIXO":    {"timeout": 150, "size_limit": 50 * 1024},
+    "MÍNIMO":   {"timeout": 300, "size_limit": 50 * 1024},
 }
 
-# --- Configurações da Compressão de Saída ---
-# Pacotes menores que 1MB não usarão compressão lossless para evitar sobrecarga.
-LOSSLESS_MIN_SIZE_BYTES = 1024 * 1024 # 1 MB
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[logging.FileHandler(LOG_PATH,'w'), logging.StreamHandler()])
+log = logging.getLogger("vispac-edge")
 
-# --- Algoritmo 1: Configurador por Sinal Vital ---
-def get_vispac_config(news2_score):
-    risco = "MÍNIMO"
-    if news2_score >= 7: risco = "ALTO"
-    elif 5 <= news2_score <= 6: risco = "MODERADO"
-    elif 1 <= news2_score <= 4: risco = "BAIXO"
-    params_map = {
-        "ALTO": {"ic_fc": 30, "eps_fc": 2, "dc_fc": 2, "ic_spo2": 30, "eps_spo2": 1, "dc_spo2": 1, "t_sdt": 15},
-        "MODERADO": {"ic_fc": 60, "eps_fc": 5, "dc_fc": 5, "ic_spo2": 90, "eps_spo2": 1, "dc_spo2": 1, "t_sdt": 1*60},
-        "BAIXO": {"ic_fc": 120, "eps_fc": 5, "dc_fc": 5, "ic_spo2": 150, "eps_spo2": 2, "dc_spo2": 2, "t_sdt": 3*60},
-        "MÍNIMO": {"ic_fc": 180, "eps_fc": 10, "dc_fc": 10, "ic_spo2": 240, "eps_spo2": 3, "dc_spo2": 3, "t_sdt": 5*60}
-    }
-    config = params_map[risco]
-    config['risco'] = risco
-    return config
+# --------------- Dataset Simulado --------------------
+SAMPLE_DATA=[(80,98),(81,98),(80,99),(82,98),(83,98),(82,97),(85,98),(84,98),(86,99),
+    (88,98),(90,97),(92,96),(95,95),(98,94),(105,93),(110,92),(112,91),(115,90),
+    (118,91),(120,92),(115,93),(110,94),(105,95),(100,96),(95,97),(92,98),(90,98),
+    (88,99),(86,98),(85,98)]
 
-def log_message(message, file_handle):
-    print(message)
-    file_handle.write(message + "\n")
+def ensure_dataset():
+    if not os.path.exists(DATASET_PATH):
+        pd.DataFrame(SAMPLE_DATA, columns=['hr','spo2']).to_csv(DATASET_PATH,index=False)
+    return pd.read_csv(DATASET_PATH)
 
+# ------------- Parâmetros Alg. 1 ------------
+PARAMS={
+ "ALTO":    dict(ic_fc=30,  eps_fc=2,  dc_fc=2,  ic_spo2=30,  eps_spo2=1, dc_spo2=1, t_sdt=15,  ic_max=30*60),
+ "MODERADO":dict(ic_fc=120, eps_fc=5,  dc_fc=5,  ic_spo2=180, eps_spo2=1, dc_spo2=1, t_sdt=60,  ic_max=30*60),
+ "BAIXO":   dict(ic_fc=300, eps_fc=5,  dc_fc=5,  ic_spo2=600, eps_spo2=2, dc_spo2=2, t_sdt=180, ic_max=2*3600),
+ "MÍNIMO":  dict(ic_fc=600, eps_fc=10, dc_fc=10, ic_spo2=900, eps_spo2=3, dc_spo2=3, t_sdt=300, ic_max=6*3600)
+}
+
+# --------------- Classes --------------------
 class Patient:
-    def __init__(self, patient_id, dataset):
-        self.patient_id = patient_id
-        self.dataset = dataset
-        self.dataset_index = random.randint(0, len(dataset) - 1)
-        self.current_news2 = 0
-        self.params = get_vispac_config(self.current_news2)
-        self.fc_buffer, self.spo2_buffer = [], []
-        self.last_fc_collection_time = time.time()
-        self.last_spo2_collection_time = time.time()
-        initial_vitals = self.get_next_vital(peek=True)
-        self.last_sent_fc = initial_vitals['hr']
-        self.last_sent_spo2 = initial_vitals['spo2']
-        self.current_ic_fc = self.params['ic_fc']
-        self.current_ic_spo2 = self.params['ic_spo2']
+    def __init__(self, pid, df, news2=0, persistent_high_risk=False):
+        self.id=pid; self.df=df; self.idx=random.randrange(len(df))
+        self.persistent_high_risk=persistent_high_risk
+        self.scenario_step=0
+        self.update_risk(news2)
+        self.last_sent_fc=self._cur('hr'); self.last_sent_spo2=self._cur('spo2')
+        self.fc_buf,self.spo2_buf=[],[]
+        self.last_fc_col=self.last_spo2_col=time.time()
+        self.stable_fc=self.stable_spo2=0
+    def _cur(self,c):return float(self.df.iloc[self.idx][c])
+    def next(self):
+        row=self.df.iloc[self.idx]; self.idx=(self.idx+1)%len(self.df)
+        return {"timestamp":time.time(),"hr":float(row['hr']),"spo2":float(row['spo2'])}
 
-    def get_next_vital(self, peek=False):
-        row = self.dataset.iloc[self.dataset_index]
-        vitals = {"timestamp": time.time(), "hr": float(row['hr']), "spo2": float(row['spo2'])}
-        if not peek:
-            self.dataset_index = (self.dataset_index + 1) % len(self.dataset)
-        return vitals
+    def update_risk(self,score):
+        if self.persistent_high_risk and score<7: score=7
+        old=getattr(self,'risk','N/A')
+        self.news2=score
+        self.risk=('ALTO' if score>=7 else 'MODERADO' if score>=5 else 'BAIXO' if score>=1 else 'MÍNIMO')
+        if self.risk!=old:
+            log.info(f"[RISCO] {self.id}: {old} → {self.risk} (NEWS2={score})")
+        p=PARAMS[self.risk]
+        self.ic_fc,self.ic_spo2=p['ic_fc'],p['ic_spo2']
+        self.eps_fc,self.eps_spo2=p['eps_fc'],p['eps_spo2']
+        self.dc_fc,self.dc_spo2=p['dc_fc'],p['dc_spo2']
+        self.t_sdt,self.ic_max=p['t_sdt'],p['ic_max']
 
-    def update_risk_and_params(self, new_news2_score, log_file):
-        log_message(f"\n[PACIENTE {self.patient_id}] Recebido novo NEWS2: {new_news2_score}. Risco anterior: {self.params['risco']}", log_file)
-        self.current_news2 = new_news2_score
-        self.params = get_vispac_config(new_news2_score)
-        self.current_ic_fc = self.params['ic_fc']
-        self.current_ic_spo2 = self.params['ic_spo2']
-        log_message(f"-> Novo Risco: {self.params['risco']}. Parâmetros de coleta e compressão atualizados.", log_file)
+    def backoff(self,sig,latest):
+        if self.risk=='ALTO':return
+        eps=self.eps_fc if sig=='hr' else self.eps_spo2
+        st_attr='stable_fc' if sig=='hr' else 'stable_spo2'
+        ic_attr='ic_fc' if sig=='hr' else 'ic_spo2'
+        last_attr='last_sent_fc' if sig=='hr' else 'last_sent_spo2'
+        st=getattr(self,st_attr); last=getattr(self,last_attr)
+        if abs(latest-last)<=eps: st+=1
+        else: st=0; setattr(self,ic_attr,PARAMS[self.risk][ic_attr])
+        if st>=K_STABLE:
+            cur=getattr(self,ic_attr); new=min(cur*2,self.ic_max)
+            if new>cur: log.info(f"[BACKOFF] {self.id} {sig.upper()} {cur}s→{new}s")
+            setattr(self,ic_attr,new); st=0
+        setattr(self,st_attr,st); setattr(self,last_attr,latest)
+
+    def forced_vitals(self):
+        if self.id=="PID-004":
+            cycle=self.scenario_step%3; self.scenario_step+=1
+            if cycle==1: return {"hr":100,"temp":38.5}
+            elif cycle==2: return {"hr":120,"sys_bp":95,"temp":39.5}
+        elif self.id=="PID-005":
+            if self.scenario_step==0: self.scenario_step+=1; return {"hr":120,"sys_bp":95,"temp":39.5}
+            elif self.scenario_step==1: self.scenario_step+=1; return {"hr":100,"temp":38.5}
+        elif self.persistent_high_risk:
+            return {"hr":130,"spo2":86,"rr":30,"temp":39.5,"sys_bp":85,"consciousness":"V"}
+        return {}
 
 class Assembler:
-    """Módulo Empacotador com filas de prioridade baseadas no risco."""
-    def __init__(self, config):
-        self.queues = {
-            risk: {
-                "buffer": [], 
-                "current_size": 0, 
-                "first_data_timestamp": None, 
-                "config": conf
-            }
-            for risk, conf in config.items()
-        }
-
-    def add_data(self, package, risk, log_file):
-        queue = self.queues[risk]
-        if not queue["buffer"]:
-            queue["first_data_timestamp"] = time.time()
-        queue["buffer"].append(package)
-        queue["current_size"] += len(json.dumps(package).encode('utf-8'))
-        log_message(f"  [Empacotador] Pacote adicionado à fila '{risk}'. Tamanho da fila: {queue['current_size']} / {queue['config']['size_limit']} bytes.", log_file)
-
+    def __init__(self,cfg):
+        self.queues={r:{"buffer":[],"size":0,"timestamp":None,"config":conf} for r,conf in cfg.items()}
+    def add(self,pkg,risk):
+        q=self.queues[risk]
+        if not q['buffer']: q['timestamp']=time.time()
+        q['buffer'].append(pkg); q['size']+=pkg['post_sdt_size']
+        log.info(f"  [Empac] +{pkg['post_sdt_size']}b → fila {risk}={q['size']}b")
     def get_ready_batches(self):
-        """Verifica todas as filas e retorna os lotes prontos para envio."""
-        ready_batches = []
-        for risk, queue in self.queues.items():
-            if not queue["buffer"]:
-                continue
-            
-            size_reached = queue["current_size"] >= queue["config"]["size_limit"]
-            timeout_reached = (time.time() - queue["first_data_timestamp"]) >= queue["config"]["timeout"]
-            
-            if size_reached or timeout_reached:
-                reason = "timeout" if timeout_reached else "tamanho"
-                batch = queue["buffer"]
-                ready_batches.append({"batch": batch, "risk": risk, "reason": reason})
-                # Reseta a fila
-                queue["buffer"] = []
-                queue["current_size"] = 0
-                queue["first_data_timestamp"] = None
-        return ready_batches
+        ready=[]
+        for r,q in self.queues.items():
+            if not q['buffer']: continue
+            if q['size']>=q['config']['size_limit'] or (q['timestamp'] and time.time()-q['timestamp']>=q['config']['timeout']):
+                reason="tamanho" if q['size']>=q['config']['size_limit'] else "timeout"
+                ready.append({"batch":q['buffer'],"risk":r,"reason":reason})
+                q['buffer'],q['size'],q['timestamp']=[],0,None
+        return ready
 
-def create_high_risk_package(batch, log_file):
-    log_message("\n*** SIMULANDO EVENTO DE RISCO ALTO ***", log_file)
-    if not batch: return batch
-    high_risk_package = batch[0].copy()
-    high_risk_package['forced_vitals'] = {'hr': 140, 'spo2': 85, 'rr': 30, 'consciousness': 'V', 'temp': 43}
-    batch[0] = high_risk_package
-    return batch
+# ------------- Compressão lossless -------------
+def lossless(txt: str, risk: str):
+    raw = txt.encode(); size=len(raw)
+    if risk == 'ALTO' or size < HUFF_MIN: return raw, 'none'
+    if size < LZW_MIN: return json.dumps(Huffman().compress(txt)).encode(), 'huffman'
+    return json.dumps(LZW().compress(txt)).encode(), 'lzw'
 
-def process_and_send_batch(batch_info, log_file, force_high_risk=False):
-    batch = batch_info["batch"]
-    risk = batch_info["risk"]
-    log_message("\n" + "="*20 + f" [ENVIO DE LOTE - RISCO {risk}] " + "="*20, log_file)
-    t_amostra = time.time()
-    
-    if force_high_risk:
-        batch = create_high_risk_package(batch, log_file)
-    
-    has_high_risk_patient = any('forced_vitals' in p for p in batch) or any(p.get('risco') == 'ALTO' for p in batch)
-    uncompressed_payload_str = json.dumps(batch)
-    true_original_size = len(uncompressed_payload_str.encode('utf-8'))
-    
-    payload_to_send, compression_header = None, "none"
-    
-    if has_high_risk_patient:
-        log_message("-> [Compressão de Saída] Lote contém paciente de Risco ALTO. Pulando compressão para baixa latência.", log_file)
-        payload_to_send = uncompressed_payload_str.encode('utf-8')
-    elif true_original_size < LOSSLESS_MIN_SIZE_BYTES:
-        log_message(f"-> [Compressão de Saída] Lote ({true_original_size}b) menor que o limiar ({LOSSLESS_MIN_SIZE_BYTES}b). Pulando compressão lossless.", log_file)
-        payload_to_send = uncompressed_payload_str.encode('utf-8')
+# ----------- Envio do lote ----------------
+def send_batch(batch_info):
+    batch=batch_info['batch']; risk=batch_info['risk']
+    total_raw_size = sum(p.get('raw_size', 0) for p in batch)
+    payload_str=json.dumps(batch)
+    raw_payload_size = len(payload_str.encode())
+    payload, hdr = lossless(payload_str, risk)
+
+    if hdr == 'none':
+        if risk == 'ALTO':
+            log.info(f"  [ETAPA 2] Compressão Lossless pulada (Risco ALTO).")
+        elif raw_payload_size < HUFF_MIN:
+            log.info(f"  [ETAPA 2] Compressão Lossless pulada (Lote {raw_payload_size}b < limiar {HUFF_MIN}b).")
     else:
-        log_message("-> [Compressão de Saída] Lote grande, aplicando LZW.", log_file)
-        compressed_package = LZW().compress(uncompressed_payload_str)
-        payload_to_send = json.dumps(compressed_package).encode('utf-8')
-        compression_header = "lzw"
+        log.info(f"  [ETAPA 2] Compressão Lossless aplicada ({hdr}).")
 
-    final_size = len(payload_to_send)
-    headers = {"X-Compression-Type": compression_header, "Content-Type": "application/json"}
-
+    final_size=len(payload)
+    start=time.time()
     try:
-        log_message(f"-> [Enviador] Enviando lote. Tamanho: {true_original_size}b -> {final_size}b.", log_file)
-        response = requests.post(API_URL, data=payload_to_send, headers=headers, timeout=15)
-        response.raise_for_status()
-        
-        t_ajuste = time.time()
-        api_response = response.json()
-        
-        tc = (final_size / true_original_size) * 100 if true_original_size > 0 else 0
-        ed = 100 - tc
-        t_loop = t_ajuste - t_amostra
-        
-        log_message(f"   -> Resposta da API recebida: {api_response}", log_file)
-        log_message(f"   -> MÉTRICAS DO LOTE: T_C: {tc:.2f}% | Economia (ED): {ed:.2f}% | T_loop: {t_loop:.4f}s", log_file)
-        
-        return api_response.get("scores", {})
+        r=requests.post(API_URL,data=payload,headers={'X-Compression-Type':hdr,'Content-Type':'application/json'},timeout=10)
+        r.raise_for_status(); resp=r.json()
+        elapsed=time.time()-start
+        ratio=100*final_size/total_raw_size if total_raw_size>0 else 0
+        log.info(f"[ENVIO] Lote '{risk}' | {len(batch)} pkts | {total_raw_size}b→{final_size}b ({ratio:.1f}%) | {hdr} | {elapsed:.3f}s | scores={resp.get('scores')}")
+        return resp.get('scores',{})
+    except Exception as e:
+        log.error(f"Falha ao enviar lote: {e}")
+        return {}
 
-    except requests.exceptions.RequestException as e:
-        log_message(f"\n[ERRO DE REDE] Não foi possível conectar à API: {e}", log_file)
-        return None
-
-def main_simulation_loop(log_file):
-    sdt_compressor = SwingingDoorCompressor()
-    try:
-        dataset = pd.read_csv(DATASET_PATH)
-    except FileNotFoundError:
-        log_message(f"[ERRO] Dataset '{DATASET_PATH}' não encontrado. Encerrando.", log_file)
-        return
-
-    patients = [Patient(f"PID-{i:03d}", dataset) for i in range(1, NUM_PATIENTS + 1)]
-    assembler = Assembler(config=ASSEMBLER_CONFIG)
-    
-    log_message("="*50, log_file)
-    log_message(f"Iniciando Simulação ViSPAC com {NUM_PATIENTS} Pacientes e Filas de Prioridade", log_file)
-    log_message("="*50, log_file)
-    
-    batch_send_count = 0
-    last_keep_alive_check_time = time.time()
-
+# --------------- MAIN LOOP ----------------
+def main():
+    df=ensure_dataset()
+    patients=[
+        Patient("PID-001",df,news2=11,persistent_high_risk=True),
+        Patient("PID-002",df), Patient("PID-003",df), Patient("PID-004",df),
+        Patient("PID-005",df,news2=5), Patient("PID-006",df), Patient("PID-007",df)
+    ]
+    assembler=Assembler(ASSEMBLER_CONFIG)
+    sdt=SwingingDoorCompressor()
+    log.info(f"Simulação iniciada com {len(patients)} pacientes (PID-001 ALTO, PID-005 MODERADO)")
+    last_keep=time.time()
     while True:
-        current_time = time.time()
-        
-        if (current_time - last_keep_alive_check_time) >= IC_VERIF_SECS:
-            log_message("\n[ALGORITMO 3] Realizando verificação da malha de segurança (Keep-Alive)...", log_file)
+        now=time.time()
+        if now-last_keep>=KEEP_ALIVE:
+            log.info("[ALG3] Keep‑alive verificação …")
             for p in patients:
-                vitals = p.get_next_vital(peek=True)
-                if abs(vitals['hr'] - p.last_sent_fc) > p.params['eps_fc']:
-                    log_message(f"!!! [ALGORITMO 3] Variação anômala em FC para {p.patient_id}! Disparando coleta imediata.", log_file)
-                    p.last_fc_collection_time = 0
-                if abs(vitals['spo2'] - p.last_sent_spo2) > p.params['eps_spo2']:
-                    log_message(f"!!! [ALGORITMO 3] Variação anômala em SpO2 para {p.patient_id}! Disparando coleta imediata.", log_file)
-                    p.last_spo2_collection_time = 0
-            last_keep_alive_check_time = current_time
-
-        for patient in patients:
-            vitals = patient.get_next_vital()
-            patient.fc_buffer.append((vitals['timestamp'], vitals['hr']))
-            patient.spo2_buffer.append((vitals['timestamp'], vitals['spo2']))
+                v=p.next()
+                if abs(v['hr']-p.last_sent_fc)>p.eps_fc: p.last_fc_col=0
+                if abs(v['spo2']-p.last_sent_spo2)>p.eps_spo2: p.last_spo2_col=0
+            last_keep=now
+        for p in patients:
+            v=p.next(); p.fc_buf.append((v['timestamp'],v['hr'])); p.spo2_buf.append((v['timestamp'],v['spo2']))
             
-            if (current_time - patient.last_fc_collection_time) >= patient.current_ic_fc:
-                log_message(f"\n--- [COLETA FC] Paciente: {patient.patient_id} (Risco: {patient.params['risco']}) ---", log_file)
-                
-                # CORREÇÃO: Cria o pacote hipotético com dados brutos para medir o tamanho original real
-                original_package = {"patient_id": patient.patient_id, "risco": patient.params['risco'], "signal": "hr", "data": patient.fc_buffer}
-                true_original_size = len(json.dumps(original_package).encode('utf-8'))
-
-                compressed_fc = sdt_compressor.compress(patient.fc_buffer, patient.params['dc_fc'], patient.params['t_sdt'])
-                
-                if compressed_fc:
-                    # Cria o pacote real com os dados comprimidos pelo SDT
-                    final_package = {"patient_id": patient.patient_id, "risco": patient.params['risco'], "signal": "hr", "data": compressed_fc}
-                    post_sdt_size = len(json.dumps(final_package).encode('utf-8'))
-                    sdt_reduction = (1 - (post_sdt_size / true_original_size)) * 100 if true_original_size > 0 else 0
-                    log_message(f"-> [Compressão SDT] Tamanho do Pacote: {true_original_size}b -> {post_sdt_size}b (Economia: {sdt_reduction:.2f}%)", log_file)
-                    assembler.add_data(final_package, patient.params['risco'], log_file)
-
-                patient.fc_buffer = []
-                patient.last_fc_collection_time = current_time
+            if now-p.last_fc_col>=p.ic_fc:
+                raw_size=len(json.dumps(p.fc_buf).encode())
+                comp=sdt.compress(p.fc_buf,p.dc_fc,p.t_sdt)
+                if comp:
+                    post_sdt_size=len(json.dumps(comp).encode())
+                    reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
+                    log.info(f"[COLETA FC] {p.id} {p.risk} | {len(p.fc_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
+                    entry={'patient_id':p.id,'signal':'hr','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size}
+                    forced=p.forced_vitals(); 
+                    if forced: entry['forced_vitals']=forced
+                    assembler.add(entry,p.risk)
+                p.fc_buf=[]; p.last_fc_col=now; p.backoff('hr',v['hr'])
             
-            if (current_time - patient.last_spo2_collection_time) >= patient.current_ic_spo2:
-                log_message(f"\n--- [COLETA SpO2] Paciente: {patient.patient_id} (Risco: {patient.params['risco']}) ---", log_file)
-                
-                original_package = {"patient_id": patient.patient_id, "risco": patient.params['risco'], "signal": "spo2", "data": patient.spo2_buffer}
-                true_original_size = len(json.dumps(original_package).encode('utf-8'))
-
-                compressed_spo2 = sdt_compressor.compress(patient.spo2_buffer, patient.params['dc_spo2'], patient.params['t_sdt'])
-                
-                if compressed_spo2:
-                    final_package = {"patient_id": patient.patient_id, "risco": patient.params['risco'], "signal": "spo2", "data": compressed_spo2}
-                    post_sdt_size = len(json.dumps(final_package).encode('utf-8'))
-                    sdt_reduction = (1 - (post_sdt_size / true_original_size)) * 100 if true_original_size > 0 else 0
-                    log_message(f"-> [Compressão SDT] Tamanho do Pacote: {true_original_size}b -> {post_sdt_size}b (Economia: {sdt_reduction:.2f}%)", log_file)
-                    assembler.add_data(final_package, patient.params['risco'], log_file)
-
-                patient.spo2_buffer = []
-                patient.last_spo2_collection_time = current_time
-
-        ready_batches = assembler.get_ready_batches()
-        for batch_info in ready_batches:
-            log_message(f"\n[Empacotador] Gatilho de envio para a fila '{batch_info['risk']}' atingido por {batch_info['reason']}!", log_file)
-            batch_send_count += 1
-            
-            force_high_risk_event = (batch_send_count == 2)
-            
-            feedback_scores = process_and_send_batch(batch_info, log_file, force_high_risk=force_high_risk_event)
-            
-            if feedback_scores:
-                log_message("\n[Feedback Loop] Aplicando scores recebidos aos pacientes...", log_file)
-                for patient_id, new_score in feedback_scores.items():
-                    for p in patients:
-                        if p.patient_id == patient_id:
-                            p.update_risk_and_params(new_score, log_file)
-                            break
+            if now-p.last_spo2_col>=p.ic_spo2:
+                raw_size=len(json.dumps(p.spo2_buf).encode())
+                comp=sdt.compress(p.spo2_buf,p.dc_spo2,p.t_sdt)
+                if comp:
+                    post_sdt_size=len(json.dumps(comp).encode())
+                    reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
+                    log.info(f"[COLETA SpO2] {p.id} {p.risk} | {len(p.spo2_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
+                    entry={'patient_id':p.id,'signal':'spo2','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size}
+                    forced=p.forced_vitals(); 
+                    if forced: entry['forced_vitals']=forced
+                    assembler.add(entry,p.risk)
+                p.spo2_buf=[]; p.last_spo2_col=now; p.backoff('spo2',v['spo2'])
         
-        queue_sizes = " | ".join([f"{risk[:3]}: {q['current_size']}b" for risk, q in assembler.queues.items()])
+        for b in assembler.get_ready_batches():
+            log.info(f"[Empac] lote fila '{b['risk']}' pronto por {b['reason']}")
+            feedback=send_batch(b)
+            if feedback:
+                for pid,score in feedback.items():
+                    for p in patients:
+                        if p.id==pid: p.update_risk(score)
+        
+        queue_sizes = " | ".join([f"{r[:3]}:{q['size']}b" for r,q in assembler.queues.items()])
         print(f"\r[{time.strftime('%H:%M:%S')}] Monitorando... Filas: [ {queue_sizes} ]", end="")
-        time.sleep(1)
+        time.sleep(0.5)
 
-if __name__ == "__main__":
-    with open(LOG_FILE_PATH, "w") as log_file:
-        main_simulation_loop(log_file)
+if __name__=='__main__':
+    main()
