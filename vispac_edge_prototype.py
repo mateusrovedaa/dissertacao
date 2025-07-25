@@ -1,14 +1,15 @@
 import time, json, random, requests, logging, os
 import pandas as pd
+import numpy as np
 from compressors import SwingingDoorCompressor, Huffman, LZW
 
 # ---------------- Constantes ----------------
-API_URL      = "http://127.0.0.1:8000/vispac/upload_batch"
+API_URL = "http://127.0.0.1:8000/vispac/upload_batch"
 DATASET_PATH = "dataset.csv"
-LOG_PATH     = "edge_log.txt"
-K_STABLE     = 3            # leituras estáveis
-KEEP_ALIVE   = 600          # 10 min
-HUFF_MIN, LZW_MIN = 8*1024, 32*1024
+LOG_PATH = "edge_log.txt"
+K_STABLE = 3
+KEEP_ALIVE = 600
+HUFF_MIN, LZW_MIN = 1 * 1024, 32 * 1024
 
 ASSEMBLER_CONFIG = {
     "ALTO":     {"timeout": 15,  "size_limit": 5 * 1024},
@@ -19,8 +20,39 @@ ASSEMBLER_CONFIG = {
 
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.FileHandler(LOG_PATH,'w'), logging.StreamHandler()])
+    handlers=[logging.FileHandler(LOG_PATH, 'w'), logging.StreamHandler()])
 log = logging.getLogger("vispac-edge")
+
+def reconstruct_signal(original_signal_buf, compressed_signal):
+    """
+    Reconstrói um sinal de mesmo tamanho que o original usando interpolação
+    linear a partir dos pontos do sinal comprimido.
+    """
+    original_timestamps = [p[0] for p in original_signal_buf]
+    compressed_timestamps = [p[0] for p in compressed_signal]
+    compressed_values = [p[1] for p in compressed_signal]
+    
+    # Usa a função de interpolação do NumPy
+    reconstructed_values = np.interp(original_timestamps, compressed_timestamps, compressed_values)
+    return reconstructed_values
+
+def calculate_prd(original_signal, reconstructed_signal):
+    """
+    Calcula a Taxa de Distorção (PRD) usando a fórmula padrão.
+    """
+    original = np.array(original_signal)
+    reconstructed = np.array(reconstructed_signal)
+
+    # Evita divisão por zero se o sinal original for nulo
+    sum_sq_original = np.sum(original**2)
+    if sum_sq_original == 0:
+        return 0.0
+
+    sum_sq_diff = np.sum((original - reconstructed)**2)
+    prd = np.sqrt(sum_sq_diff / sum_sq_original) * 100
+    return prd
+# -----------------------------------------------------------------
+
 
 # --------------- Dataset Simulado --------------------
 SAMPLE_DATA=[(80,98),(81,98),(80,99),(82,98),(83,98),(82,97),(85,98),(84,98),(86,99),
@@ -119,7 +151,7 @@ class Assembler:
 def lossless(txt: str, risk: str):
     raw = txt.encode(); size=len(raw)
     if risk == 'ALTO' or size < HUFF_MIN: return raw, 'none'
-    if size < LZW_MIN: return json.dumps(Huffman().compress(txt)).encode(), 'huffman'
+    if size < LZW_MIN: return json.dumps(Huffman().compress(txt)).encode(), 'hushman'
     return json.dumps(LZW().compress(txt)).encode(), 'lzw'
 
 # ----------- Envio do lote ----------------
@@ -161,57 +193,94 @@ def main():
     ]
     assembler=Assembler(ASSEMBLER_CONFIG)
     sdt=SwingingDoorCompressor()
+
+    prd_accumulator = {'hr': [], 'spo2': []}
+
     log.info(f"Simulação iniciada com {len(patients)} pacientes (PID-001 ALTO, PID-005 MODERADO)")
     last_keep=time.time()
-    while True:
-        now=time.time()
-        if now-last_keep>=KEEP_ALIVE:
-            log.info("[ALG3] Keep‑alive verificação …")
+    
+    try:
+        while True:
+            now=time.time()
+            if now-last_keep>=KEEP_ALIVE:
+                log.info("[ALG3] Keep‑alive verificação …")
+                for p in patients:
+                    v=p.next()
+                    if abs(v['hr']-p.last_sent_fc)>p.eps_fc: p.last_fc_col=0
+                    if abs(v['spo2']-p.last_sent_spo2)>p.eps_spo2: p.last_spo2_col=0
+                last_keep=now
             for p in patients:
-                v=p.next()
-                if abs(v['hr']-p.last_sent_fc)>p.eps_fc: p.last_fc_col=0
-                if abs(v['spo2']-p.last_sent_spo2)>p.eps_spo2: p.last_spo2_col=0
-            last_keep=now
-        for p in patients:
-            v=p.next(); p.fc_buf.append((v['timestamp'],v['hr'])); p.spo2_buf.append((v['timestamp'],v['spo2']))
+                v=p.next(); p.fc_buf.append((v['timestamp'],v['hr'])); p.spo2_buf.append((v['timestamp'],v['spo2']))
+                
+                if now-p.last_fc_col>=p.ic_fc:
+                    raw_size=len(json.dumps(p.fc_buf).encode())
+                    comp=sdt.compress(p.fc_buf,p.dc_fc,p.t_sdt)
+                    if comp:
+                        post_sdt_size=len(json.dumps(comp).encode())
+                        reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
+                        log.info(f"[COLETA FC] {p.id} {p.risk} | {len(p.fc_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
+                        
+                        if p.risk == 'ALTO':
+                            original_signal_values = [point[1] for point in p.fc_buf]
+                            reconstructed_signal = reconstruct_signal(p.fc_buf, comp)
+                            prd_value = calculate_prd(original_signal_values, reconstructed_signal)
+                            prd_accumulator['hr'].append(prd_value)
+                            log.info(f"  [DISTORÇÃO FC] {p.id} PRD={prd_value:.4f}%")
+
+                        entry={'patient_id':p.id,'signal':'hr','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size}
+                        forced=p.forced_vitals(); 
+                        if forced: entry['forced_vitals']=forced
+                        assembler.add(entry,p.risk)
+                    p.fc_buf=[]; p.last_fc_col=now; p.backoff('hr',v['hr'])
+                
+                if now-p.last_spo2_col>=p.ic_spo2:
+                    raw_size=len(json.dumps(p.spo2_buf).encode())
+                    comp=sdt.compress(p.spo2_buf,p.dc_spo2,p.t_sdt)
+                    if comp:
+                        post_sdt_size=len(json.dumps(comp).encode())
+                        reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
+                        log.info(f"[COLETA SpO2] {p.id} {p.risk} | {len(p.spo2_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
+                        
+                        if p.risk == 'ALTO':
+                            original_signal_values = [point[1] for point in p.spo2_buf]
+                            reconstructed_signal = reconstruct_signal(p.spo2_buf, comp)
+                            prd_value = calculate_prd(original_signal_values, reconstructed_signal)
+                            prd_accumulator['spo2'].append(prd_value)
+                            log.info(f"  [DISTORÇÃO SpO2] {p.id} PRD={prd_value:.4f}%")
+
+                        entry={'patient_id':p.id,'signal':'spo2','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size}
+                        forced=p.forced_vitals(); 
+                        if forced: entry['forced_vitals']=forced
+                        assembler.add(entry,p.risk)
+                    p.spo2_buf=[]; p.last_spo2_col=now; p.backoff('spo2',v['spo2'])
             
-            if now-p.last_fc_col>=p.ic_fc:
-                raw_size=len(json.dumps(p.fc_buf).encode())
-                comp=sdt.compress(p.fc_buf,p.dc_fc,p.t_sdt)
-                if comp:
-                    post_sdt_size=len(json.dumps(comp).encode())
-                    reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
-                    log.info(f"[COLETA FC] {p.id} {p.risk} | {len(p.fc_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
-                    entry={'patient_id':p.id,'signal':'hr','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size}
-                    forced=p.forced_vitals(); 
-                    if forced: entry['forced_vitals']=forced
-                    assembler.add(entry,p.risk)
-                p.fc_buf=[]; p.last_fc_col=now; p.backoff('hr',v['hr'])
+            for b in assembler.get_ready_batches():
+                log.info(f"[Empac] lote fila '{b['risk']}' pronto por {b['reason']}")
+                feedback=send_batch(b)
+                if feedback:
+                    for pid,score in feedback.items():
+                        for p in patients:
+                            if p.id==pid: p.update_risk(score)
             
-            if now-p.last_spo2_col>=p.ic_spo2:
-                raw_size=len(json.dumps(p.spo2_buf).encode())
-                comp=sdt.compress(p.spo2_buf,p.dc_spo2,p.t_sdt)
-                if comp:
-                    post_sdt_size=len(json.dumps(comp).encode())
-                    reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
-                    log.info(f"[COLETA SpO2] {p.id} {p.risk} | {len(p.spo2_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
-                    entry={'patient_id':p.id,'signal':'spo2','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size}
-                    forced=p.forced_vitals(); 
-                    if forced: entry['forced_vitals']=forced
-                    assembler.add(entry,p.risk)
-                p.spo2_buf=[]; p.last_spo2_col=now; p.backoff('spo2',v['spo2'])
-        
-        for b in assembler.get_ready_batches():
-            log.info(f"[Empac] lote fila '{b['risk']}' pronto por {b['reason']}")
-            feedback=send_batch(b)
-            if feedback:
-                for pid,score in feedback.items():
-                    for p in patients:
-                        if p.id==pid: p.update_risk(score)
-        
-        queue_sizes = " | ".join([f"{r[:3]}:{q['size']}b" for r,q in assembler.queues.items()])
-        print(f"\r[{time.strftime('%H:%M:%S')}] Monitorando... Filas: [ {queue_sizes} ]", end="")
-        time.sleep(0.5)
+            queue_sizes = " | ".join([f"{r[:3]}:{q['size']}b" for r,q in assembler.queues.items()])
+            print(f"\r[{time.strftime('%H:%M:%S')}] Monitorando... Filas: [ {queue_sizes} ]", end="")
+            time.sleep(0.5)
+
+    finally:
+        log.info("="*50)
+        log.info("Simulação encerrada. Estatísticas de PRD para Risco ALTO (PID-001):")
+        if prd_accumulator['hr']:
+            avg_hr = np.mean(prd_accumulator['hr'])
+            min_hr = np.min(prd_accumulator['hr'])
+            max_hr = np.max(prd_accumulator['hr'])
+            log.info(f"  FC (hr): Média={avg_hr:.4f}% | Mín={min_hr:.4f}% | Máx={max_hr:.4f}%")
+        if prd_accumulator['spo2']:
+            avg_spo2 = np.mean(prd_accumulator['spo2'])
+            min_spo2 = np.min(prd_accumulator['spo2'])
+            max_spo2 = np.max(prd_accumulator['spo2'])
+            log.info(f"  SpO2:    Média={avg_spo2:.4f}% | Mín={min_spo2:.4f}% | Máx={max_spo2:.4f}%")
+        log.info("="*50)
+
 
 if __name__=='__main__':
     main()
