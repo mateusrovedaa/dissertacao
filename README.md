@@ -74,6 +74,7 @@ The Compose stack runs PostgreSQL and Mosquitto and wires services:
 - mqtt: Mosquitto broker (port 1883)
 - cloud: FastAPI (port 9000), uses `CLOUD_DB_URL=postgresql://vispac:vispac@db:5432/vispac` and ensures the schema at startup
 - fog: FastAPI (port 8000), forwards to `http://cloud:9000` and listens to MQTT
+  (encaminha para a cloud em ordem de prioridade de risco: ALTO → MODERADO → BAIXO → MÍNIMO)
 - edge: simulator, posts to `http://fog:8000/vispac/upload_batch` and uses MQTT when `EDGE_USE_MQTT=1`
 
 Verify the database schema in Compose:

@@ -77,7 +77,10 @@ def _risk_from_score(score: int) -> str:
 
 def _forward_to_cloud(grouped: DefaultDict[str, List[Dict[str, Any]]]):
     base = os.environ.get("CLOUD_BASE_URL", "http://127.0.0.1:9000")
-    for risk, items in grouped.items():
+    # Ordem de prioridade para envio: ALTO > MODERADO > BAIXO > MÍNIMO
+    priority_order = ["ALTO", "MODERADO", "BAIXO", "MÍNIMO"]
+    for risk in priority_order:
+        items = grouped.get(risk, [])
         if not items:
             continue
         path = risk.lower().replace('í','i').replace('Í','I')  # "MÍNIMO" → "minimo"
