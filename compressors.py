@@ -3,7 +3,7 @@ from collections import Counter
 from typing import List, Dict, Tuple
 
 # ---------------------------------------------------------------------
-# helpers
+# auxiliares
 # ---------------------------------------------------------------------
 
 def to_b64(b: bytes) -> str:
@@ -13,7 +13,7 @@ def from_b64(s: str) -> bytes:
     return base64.b64decode(s.encode())
 
 # ---------------------------------------------------------------------
-# SDT – unchanged (accepts per‑sample tuple)
+# SDT – inalterado (aceita tupla por amostra)
 # ---------------------------------------------------------------------
 class SwingingDoorCompressor:
     def __init__(self):
@@ -48,7 +48,7 @@ class SwingingDoorCompressor:
         return archived
 
 # ---------------------------------------------------------------------
-# LZW – returns base64 string
+# LZW – retorna string em base64
 # ---------------------------------------------------------------------
 class LZW:
     def compress(self, text: str) -> str:
@@ -83,7 +83,7 @@ class LZW:
         return "".join(res)
 
 # ---------------------------------------------------------------------
-# Huffman – returns {payload, codes} with payload base64
+# Huffman – retorna {payload, codes} com payload em base64
 # ---------------------------------------------------------------------
 class Huffman:
     def _tree(self, freq: Dict[str, int]):

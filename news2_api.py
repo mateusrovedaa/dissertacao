@@ -1,7 +1,13 @@
-from typing import Dict, Any
-from fastapi import FastAPI, Request, HTTPException, Body
+from typing import Dict, Any, List, DefaultDict
+from collections import defaultdict
+from fastapi import FastAPI, Request, HTTPException, Body, BackgroundTasks
 from pydantic import BaseModel
 import json, uvicorn
+import os, requests
+try:
+    import paho.mqtt.client as mqtt
+except Exception:
+    mqtt = None
 from compressors import LZW, Huffman
 
 app = FastAPI(title="ViSPAC Scoring & Decompression API v2")
@@ -11,7 +17,7 @@ class Vitals(BaseModel):
     on_o2: bool = False; temp: float = 36.5; sys_bp: float = 120
     hr: float = 80; consciousness: str = "A"
 
-# --- scorers (unchanged) ----------------------------------------------------
+# --- classificadores (inalterados) ------------------------------------------
 
 def score_rr(rr): return 3 if rr<=8 else (1 if rr<=11 else (0 if rr<=20 else (2 if rr<=24 else 3)))
 
@@ -66,24 +72,48 @@ def news2_route(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     total = calculate(vitals)
     return {"component_scores": scores, "total_score": total}
 
+def _risk_from_score(score: int) -> str:
+    return 'ALTO' if score >= 7 else ('MODERADO' if score >= 5 else ('BAIXO' if score >= 1 else 'MÍNIMO'))
+
+def _forward_to_cloud(grouped: DefaultDict[str, List[Dict[str, Any]]]):
+    base = os.environ.get("CLOUD_BASE_URL", "http://127.0.0.1:9000")
+    for risk, items in grouped.items():
+        if not items:
+            continue
+        path = risk.lower().replace('í','i').replace('Í','I')  # "MÍNIMO" → "minimo"
+        url = f"{base}/cloud/ingest/{path}"
+        try:
+            requests.post(url, json=items, timeout=10)
+        except Exception as e:
+            # Encaminhamento best‑effort; não falhar a resposta para a borda
+            print(f"[FOG] Falha ao encaminhar para cloud {url}: {e}")
+
 @app.post("/vispac/upload_batch")
-async def upload_batch(req: Request) -> Dict[str, Any]:
-    ctype = req.headers.get("X-Compression-Type","none")
+async def upload_batch(req: Request, background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    ctype = req.headers.get("X-Compression-Type","none").lower()
     raw = await req.body()
+    scores, to_cloud = _process_batch_payload(ctype, raw)
+    background_tasks.add_task(_forward_to_cloud, to_cloud)
+    return {"batch_processed": len(scores), "scores": scores}
+
+
+def _process_batch_payload(ctype: str, raw_bytes: bytes):
+    """Decodifica o payload (mesma lógica do endpoint HTTP) e calcula os escores.
+    Retorna (dicionario_scores, itens_agrupados_para_cloud)."""
     try:
         if ctype=="lzw":
-            payload = LZW().decompress(raw.decode())
-        elif ctype=="huffman":
-            data = json.loads(raw)
+            payload = LZW().decompress(raw_bytes.decode())
+        elif ctype in ("huffman", "hushman"):
+            data = json.loads(raw_bytes)
             payload = Huffman().decompress(data["payload"], data["codes"], data.get("padding", 0))
         else:
-            payload = raw.decode()
-        #print(payload)
+            payload = raw_bytes.decode()
         batch = json.loads(payload)
     except Exception as e:
         raise HTTPException(400, f"Falha ao decodificar lote: {e}")
 
     scores = {}
+    to_cloud: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
     for pkg in batch:
         vidict = Vitals().model_dump()
         if "forced_vitals" in pkg:
@@ -92,8 +122,73 @@ async def upload_batch(req: Request) -> Dict[str, Any]:
             signal = pkg.get("signal")
             if pkg.get("data"):
                 vidict[signal] = pkg["data"][-1][1]
-        scores[pkg["patient_id"]] = calculate(Vitals(**vidict))
-    return {"batch_processed": len(scores), "scores": scores}
+        total = calculate(Vitals(**vidict))
+        scores[pkg["patient_id"]] = total
+        risco = _risk_from_score(total)
+    # Encaminha um instantâneo dos vitais usados no cálculo; omite raw_size/post_sdt_size
+        to_store = {
+            "patient_id": pkg.get("patient_id"),
+            "signal": pkg.get("signal"),
+            "data": pkg.get("data"),
+            "forced_vitals": pkg.get("forced_vitals"),
+            "score": total,
+            "risk": risco,
+            # vitals snapshot
+            "hr": vidict.get("hr"),
+            "spo2": vidict.get("spo2"),
+            "rr": vidict.get("rr"),
+            "temp": vidict.get("temp"),
+            "sys_bp": vidict.get("sys_bp"),
+            "on_o2": vidict.get("on_o2"),
+            "spo2_scale": vidict.get("spo2_scale"),
+            "consciousness": vidict.get("consciousness"),
+        }
+        to_cloud[risco].append(to_store)
+    return scores, to_cloud
+
+
+@app.on_event("startup")
+def _start_mqtt_listener():
+    """Se paho-mqtt estiver disponível, inicia um cliente MQTT em background
+    para receber mensagens da borda e responder com os escores."""
+    if mqtt is None:
+        print("[FOG] paho-mqtt not installed; MQTT listener disabled.")
+        return
+
+    broker = os.environ.get('MQTT_BROKER','127.0.0.1')
+    port = int(os.environ.get('MQTT_PORT','1883'))
+    client = mqtt.Client()
+
+    def on_message(client, userdata, message):
+        try:
+            data = json.loads(message.payload.decode())
+            reply_topic = data.get('reply_topic')
+            ctype = data.get('X-Compression-Type','none').lower()
+            raw_payload = data.get('payload','').encode()
+            try:
+                scores, to_cloud = _process_batch_payload(ctype, raw_payload)
+            except HTTPException as e:
+                # publica erro
+                if reply_topic:
+                    client.publish(reply_topic, json.dumps({'error': str(e)}))
+                return
+            # encaminha para a cloud
+            _forward_to_cloud(to_cloud)
+            # responde
+            if reply_topic:
+                client.publish(reply_topic, json.dumps({'scores': scores}))
+        except Exception as e:
+            print(f"[FOG MQTT] handler error: {e}")
+
+    client.on_message = on_message
+    try:
+        client.connect(broker, port, 60)
+        client.subscribe('vispac/upload_batch')
+        client.loop_start()
+        print(f"[FOG] MQTT listener started on {broker}:{port} topic vispac/upload_batch")
+    except Exception as e:
+        print(f"[FOG] MQTT connect failed: {e}")
 
 if __name__ == "__main__":
+    # API da camada FOG
     uvicorn.run("__main__:app", host="0.0.0.0", port=8000, reload=True)

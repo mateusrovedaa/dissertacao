@@ -1,12 +1,12 @@
-import time, json, random, requests, logging, os
+import time, json, random, requests, logging, os, uuid
 import pandas as pd
 import numpy as np
 from compressors import SwingingDoorCompressor, Huffman, LZW
 
 # ---------------- Constantes ----------------
-API_URL = "http://127.0.0.1:8000/vispac/upload_batch"
+API_URL = os.environ.get("API_URL", "http://127.0.0.1:8000/vispac/upload_batch")
 DATASET_PATH = "dataset.csv"
-LOG_PATH = "edge_log.txt"
+LOG_PATH = "logs/edge_log.txt"
 K_STABLE = 3
 KEEP_ALIVE = 600
 HUFF_MIN, LZW_MIN = 1 * 1024, 32 * 1024
@@ -172,6 +172,46 @@ def send_batch(batch_info):
 
     final_size=len(payload)
     start=time.time()
+    # Opção MQTT: defina EDGE_USE_MQTT=1 e MQTT_BROKER / MQTT_PORT se necessário
+    use_mqtt = os.environ.get('EDGE_USE_MQTT','0') in ('1','true','True')
+    if use_mqtt:
+        try:
+            import paho.mqtt.client as mqtt
+            resp_topic = f"vispac/resp/{uuid.uuid4()}"
+            msg = json.dumps({'reply_topic': resp_topic, 'X-Compression-Type': hdr, 'payload': payload.decode()})
+
+            q = []
+            received = {'data': None}
+            def _on_message(client, userdata, message):
+                try:
+                    received['data'] = json.loads(message.payload.decode())
+                except Exception:
+                    received['data'] = None
+
+            client = mqtt.Client()
+            client.on_message = _on_message
+            broker = os.environ.get('MQTT_BROKER','127.0.0.1')
+            port = int(os.environ.get('MQTT_PORT','1883'))
+            client.connect(broker, port, 60)
+            client.loop_start()
+            client.subscribe(resp_topic)
+            client.publish('vispac/upload_batch', msg)
+
+            # wait for response (max 10s)
+            timeout = 10
+            waited = 0
+            while waited < timeout and received['data'] is None:
+                time.sleep(0.1); waited += 0.1
+            client.loop_stop(); client.disconnect()
+            resp = received['data'] or {}
+            elapsed=time.time()-start
+            ratio=100*final_size/total_raw_size if total_raw_size>0 else 0
+            log.info(f"[ENVIO MQTT] Lote '{risk}' | {len(batch)} pkts | {total_raw_size}b→{final_size}b ({ratio:.1f}%) | {hdr} | {elapsed:.3f}s | scores={resp.get('scores')}")
+            return resp.get('scores',{})
+        except Exception as e:
+            log.error(f"Falha ao enviar lote via MQTT: {e}")
+            return {}
+
     try:
         r=requests.post(API_URL,data=payload,headers={'X-Compression-Type':hdr,'Content-Type':'application/json'},timeout=10)
         r.raise_for_status(); resp=r.json()

@@ -1,0 +1,58 @@
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: mqtt
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "1883:1883"
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: vispac
+      POSTGRES_USER: vispac
+      POSTGRES_PASSWORD: vispac
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vispac -d vispac"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  cloud:
+    build: .
+    command: python cloud_api.py
+    environment:
+      CLOUD_DB_URL: postgresql://vispac:vispac@db:5432/vispac
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "9000:9000"
+
+  fog:
+    build: .
+    command: python news2_api.py
+    environment:
+      CLOUD_BASE_URL: http://cloud:9000
+      MQTT_BROKER: mqtt
+      MQTT_PORT: 1883
+    depends_on:
+      - cloud
+      - mqtt
+    ports:
+      - "8000:8000"
+
+  edge:
+    build: .
+    command: python vispac_edge_prototype.py
+    environment:
+      API_URL: http://fog:8000/vispac/upload_batch
+      EDGE_USE_MQTT: "1"
+      MQTT_BROKER: mqtt
+      MQTT_PORT: 1883
+    depends_on:
+      - fog
+      - mqtt
