@@ -17,7 +17,7 @@ class Vitals(BaseModel):
     on_o2: bool = False; temp: float = 36.5; sys_bp: float = 120
     hr: float = 80; consciousness: str = "A"
 
-# --- classificadores (inalterados) ------------------------------------------
+# --- scoring functions ------------------------------------------
 
 def score_rr(rr): return 3 if rr<=8 else (1 if rr<=11 else (0 if rr<=20 else (2 if rr<=24 else 3)))
 
@@ -54,9 +54,9 @@ def calculate(v: Vitals) -> int:
     s = score_rr(v.rr)+score_spo2(v.spo2,v.spo2_scale,v.on_o2)+score_o2(v.on_o2)+score_temp(v.temp)+score_bp(v.sys_bp)+score_hr(v.hr)+score_consc(v.consciousness)
     return 0 if v.spo2_scale==2 and s==score_spo2(v.spo2,v.spo2_scale,v.on_o2) else s
 
-@app.post("/news2", summary="Calcula NEWS2 (JSON parcial ou completo)")
+@app.post("/news2", summary="Calculate NEWS2 (partial or complete JSON)")
 def news2_route(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    """Endpoint amigável para Postman. Envie apenas os campos que deseja alterar."""
+    """User-friendly endpoint for Postman. Send only the fields you want to change."""
     vitals = Vitals(**{**Vitals().model_dump(), **payload})
     
     scores = {
@@ -73,23 +73,23 @@ def news2_route(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     return {"component_scores": scores, "total_score": total}
 
 def _risk_from_score(score: int) -> str:
-    return 'ALTO' if score >= 7 else ('MODERADO' if score >= 5 else ('BAIXO' if score >= 1 else 'MÍNIMO'))
+    return 'HIGH' if score >= 7 else ('MODERATE' if score >= 5 else ('LOW' if score >= 1 else 'MINIMAL'))
 
 def _forward_to_cloud(grouped: DefaultDict[str, List[Dict[str, Any]]]):
     base = os.environ.get("CLOUD_BASE_URL", "http://127.0.0.1:9000")
-    # Ordem de prioridade para envio: ALTO > MODERADO > BAIXO > MÍNIMO
-    priority_order = ["ALTO", "MODERADO", "BAIXO", "MÍNIMO"]
+    # Priority order for sending: HIGH > MODERATE > LOW > MINIMAL
+    priority_order = ["HIGH", "MODERATE", "LOW", "MINIMAL"]
     for risk in priority_order:
         items = grouped.get(risk, [])
         if not items:
             continue
-        path = risk.lower().replace('í','i').replace('Í','I')  # "MÍNIMO" → "minimo"
+        path = risk.lower()  # "HIGH" → "high", "MODERATE" → "moderate", etc.
         url = f"{base}/cloud/ingest/{path}"
         try:
             requests.post(url, json=items, timeout=10)
         except Exception as e:
-            # Encaminhamento best‑effort; não falhar a resposta para a borda
-            print(f"[FOG] Falha ao encaminhar para cloud {url}: {e}")
+            # Best-effort forwarding; don't fail the response to edge
+            print(f"[FOG] Failed to forward to cloud {url}: {e}")
 
 @app.post("/vispac/upload_batch")
 async def upload_batch(req: Request, background_tasks: BackgroundTasks) -> Dict[str, Any]:
@@ -101,8 +101,8 @@ async def upload_batch(req: Request, background_tasks: BackgroundTasks) -> Dict[
 
 
 def _process_batch_payload(ctype: str, raw_bytes: bytes):
-    """Decodifica o payload (mesma lógica do endpoint HTTP) e calcula os escores.
-    Retorna (dicionario_scores, itens_agrupados_para_cloud)."""
+    """Decodes the payload (same logic as HTTP endpoint) and calculates scores.
+    Returns (scores_dict, grouped_items_for_cloud)."""
     try:
         if ctype=="lzw":
             payload = LZW().decompress(raw_bytes.decode())
@@ -113,7 +113,7 @@ def _process_batch_payload(ctype: str, raw_bytes: bytes):
             payload = raw_bytes.decode()
         batch = json.loads(payload)
     except Exception as e:
-        raise HTTPException(400, f"Falha ao decodificar lote: {e}")
+        raise HTTPException(400, f"Failed to decode batch: {e}")
 
     scores = {}
     to_cloud: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -128,7 +128,7 @@ def _process_batch_payload(ctype: str, raw_bytes: bytes):
         total = calculate(Vitals(**vidict))
         scores[pkg["patient_id"]] = total
         risco = _risk_from_score(total)
-    # Encaminha um instantâneo dos vitais usados no cálculo; omite raw_size/post_sdt_size
+    # Forward a snapshot of vitals used in calculation; omit raw_size/post_sdt_size
         to_store = {
             "patient_id": pkg.get("patient_id"),
             "signal": pkg.get("signal"),
@@ -152,8 +152,8 @@ def _process_batch_payload(ctype: str, raw_bytes: bytes):
 
 @app.on_event("startup")
 def _start_mqtt_listener():
-    """Se paho-mqtt estiver disponível, inicia um cliente MQTT em background
-    para receber mensagens da borda e responder com os escores."""
+    """If paho-mqtt is available, starts an MQTT client in background
+    to receive messages from edge and respond with scores."""
     if mqtt is None:
         print("[FOG] paho-mqtt not installed; MQTT listener disabled.")
         return
@@ -171,13 +171,13 @@ def _start_mqtt_listener():
             try:
                 scores, to_cloud = _process_batch_payload(ctype, raw_payload)
             except HTTPException as e:
-                # publica erro
+                # publish error
                 if reply_topic:
                     client.publish(reply_topic, json.dumps({'error': str(e)}))
                 return
-            # encaminha para a cloud
+            # forward to cloud
             _forward_to_cloud(to_cloud)
-            # responde
+            # respond
             if reply_topic:
                 client.publish(reply_topic, json.dumps({'scores': scores}))
         except Exception as e:
@@ -193,5 +193,5 @@ def _start_mqtt_listener():
         print(f"[FOG] MQTT connect failed: {e}")
 
 if __name__ == "__main__":
-    # API da camada FOG
+    # FOG layer API
     uvicorn.run("__main__:app", host="0.0.0.0", port=8000, reload=True)

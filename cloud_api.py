@@ -10,20 +10,20 @@ DB_URL = os.environ.get("CLOUD_DB_URL", "")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Contexto de vida (lifespan) do FastAPI para inicializar o esquema do BD sem usar on_event (obsoleto)."""
+    """FastAPI lifespan context to initialize DB schema without using on_event (deprecated)."""
     try:
         conn = get_conn()
         conn.close()
         print("[cloud_api] Database schema ensured at startup.")
     except Exception as e:
-    # Log defensivo; o compose deve aguardar saúde do BD, mas por garantia
+    # Defensive logging; compose should wait for DB health, but just in case
         print(f"[cloud_api] Database init on startup failed: {e}")
     yield
     # No shutdown actions required
 
 app = FastAPI(title="ViSPAC Cloud Ingest API", lifespan=lifespan)
 
-RISK_VALUES = {"alto", "moderado", "baixo", "minimo"}
+RISK_VALUES = {"high", "moderate", "low", "minimal"}
 
 class IngestItem(BaseModel):
     patient_id: str
@@ -32,7 +32,7 @@ class IngestItem(BaseModel):
     forced_vitals: Dict[str, Any] | None = None
     score: int
     risk: str
-    # instantâneo de sinais vitais
+    # vitals snapshot
     hr: float | None = None
     spo2: float | None = None
     rr: float | None = None
@@ -98,17 +98,17 @@ def get_conn():
 
 @app.post("/cloud/ingest/{risk}", summary="Receive items by risk stream and store to DB")
 async def ingest_by_risk(
-    risk: str = Path(..., description="Risk stream: alto|moderado|baixo|minimo"),
+    risk: str = Path(..., description="Risk stream: high|moderate|low|minimal"),
     items: List[IngestItem] = Body(...),
 ):
     r = risk.lower()
     if r not in RISK_VALUES:
         raise HTTPException(400, f"Invalid risk stream: {risk}")
 
-    # Verificação opcional: garantir que cada item tenha risco compatível com o path
+    # Optional validation: ensure each item has risk compatible with path
     for it in items:
-    # Permite diferença de acentuação; normaliza ambos
-        it_risk_norm = it.risk.lower().replace("í", "i").replace("Í", "i")
+    # Allow for case differences; normalize both
+        it_risk_norm = it.risk.lower()
         if it_risk_norm != r:
             raise HTTPException(400, f"Item risk {it.risk} != path risk {risk}")
 
@@ -178,5 +178,5 @@ async def ingest_by_risk(
 
 if __name__ == "__main__":
     # CLOUD layer API
-    # Executa o objeto app diretamente para garantir que o lifespan rode de forma confiável em containers
+    # Run the app object directly to ensure lifespan runs reliably in containers
     uvicorn.run(app, host="0.0.0.0", port=9000)

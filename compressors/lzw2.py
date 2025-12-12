@@ -79,7 +79,7 @@ if arguments.action == 'compress':
     pickle.dump(compressedFile, output)
     
     tempoExec = time.time() - t1
-    print("Tempo de compressão: {} segundos".format(tempoExec))
+    print("Compression time: {} seconds".format(tempoExec))
 
 else:
     input = pickle.load(open(ABSOLUTE_PATH+"//"+arguments.input, "rb"))
@@ -90,7 +90,7 @@ else:
             output.write(l)
     tempoExec = time.time() - t1
 
-    print("Tempo de descompressão: {} segundos".format(tempoExec))
+    print("Decompression time: {} seconds".format(tempoExec))
 
     output.close()
            

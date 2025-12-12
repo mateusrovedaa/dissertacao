@@ -55,17 +55,17 @@ filtered_data = swinging_door_algorithm(data, deviation)
 #print(filtered_data)
 lines = [f"{item[0]} {item[1]}" for item in filtered_data]
 tempoExec = time.time() - t1
-print("Tempo de execução: {} segundos".format(tempoExec))
+print("Execution time: {} seconds".format(tempoExec))
 #print(lines)
 
 import pandas as pd
 from datetime import datetime
 from pandas import read_csv, DataFrame
 
-# Use a função zip para dividir os elementos em colunas
+# Use the zip function to split elements into columns
 dates, values = zip(*filtered_data)
 
-# Agora, 'dates' conterá as datas e 'values' conterá os valores
+# Now 'dates' will contain the dates and 'values' will contain the values
 
 df2 = pd.DataFrame({'Dates': dates, 'Values': values})
 print(len(df2))
@@ -73,7 +73,7 @@ print(df2)
 
 df2.to_csv('output_fc.txt', index=False, sep='\t')
 
-# Confirma que o arquivo foi fechado
+# Confirm the file was closed
 if arquivo.closed:
-    print(f"A lista foi exportada com sucesso para '{nome_arquivo}'.")
-    print(f"Deviation= '{deviation}'.")
+    print(f"List successfully exported to '{nome_arquivo}'.")
+    print(f"Deviation= '{deviation}'")
