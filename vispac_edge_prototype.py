@@ -3,6 +3,64 @@ import pandas as pd
 import numpy as np
 from compressors import SwingingDoorCompressor, Huffman, LZW
 
+# ---------------- Logging Setup (must be first) ----------------
+LOG_PATH = "logs/edge_log.txt"
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[logging.FileHandler(LOG_PATH, 'w'), logging.StreamHandler()])
+log = logging.getLogger("vispac-edge")
+
+# Try to import YAML for configuration
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+
+# ---------------- Configuration ----------------
+CONFIG_PATH = os.environ.get("CONFIG_PATH", "config/simulation.yaml")
+
+def load_config():
+    """Load simulation configuration from YAML file."""
+    config = {
+        "defaults": {"spo2_scale": 1, "on_o2": False, "consciousness": "A"},
+        "datasets": {
+            "high_risk": {"probabilities": {"on_o2": 0.4, "spo2_scale_2": 0.3, "altered_consciousness": 0.2},
+                         "consciousness_options": ["V", "P"]},
+            "low_risk": {"probabilities": {"on_o2": 0.1, "spo2_scale_2": 0.05, "altered_consciousness": 0.02},
+                        "consciousness_options": ["V"]}
+        },
+        "patient_overrides": {},
+        "vitals_ranges": {
+            "high_risk": {"sys_bp": [85, 95], "temp_high": [38.8, 39.8], "temp_low": [35.0, 35.8], 
+                         "rr_high": [25, 29], "rr_low": [8, 10]},
+            "moderate_risk": {"sys_bp": [95, 108], "temp": [38.1, 39.0], "rr": [21, 24]}
+        }
+    }
+    
+    if YAML_AVAILABLE and os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                file_config = yaml.safe_load(f)
+                if file_config:
+                    # Deep merge with defaults
+                    for key in file_config:
+                        if key in config and isinstance(config[key], dict):
+                            config[key].update(file_config[key])
+                        else:
+                            config[key] = file_config[key]
+            log.info(f"Configuration loaded from {CONFIG_PATH}")
+        except Exception as e:
+            log.warning(f"Failed to load config from {CONFIG_PATH}: {e}. Using defaults.")
+    elif not YAML_AVAILABLE:
+        log.warning("PyYAML not installed. Using default configuration. Install with: pip install pyyaml")
+    
+    return config
+
+CONFIG = load_config()
+
 # ---------------- Constants ----------------
 API_URL = os.environ.get("API_URL", "http://127.0.0.1:8000/vispac/upload_batch")
 
@@ -17,8 +75,6 @@ DATASET_PATH = DATASET_PATHS.get(DATASET_TYPE, DATASET_PATHS["default"])
 
 # Number of patients to simulate (0 = all available)
 NUM_PATIENTS = int(os.environ.get("NUM_PATIENTS", "0"))
-
-LOG_PATH = "logs/edge_log.txt"
 K_STABLE = 3
 KEEP_ALIVE = 600
 HUFF_MIN, LZW_MIN = 1 * 1024, 32 * 1024
@@ -29,11 +85,6 @@ ASSEMBLER_CONFIG = {
     "LOW":      {"timeout": 150, "size_limit": 50 * 1024},
     "MINIMAL":  {"timeout": 300, "size_limit": 50 * 1024},
 }
-
-logging.basicConfig(level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.FileHandler(LOG_PATH, 'w'), logging.StreamHandler()])
-log = logging.getLogger("vispac-edge")
 
 def reconstruct_signal(original_signal_buf, compressed_signal):
     """
@@ -119,6 +170,43 @@ def load_patient_specific_data(patient_id, full_df):
     log.warning(f"  Dataset without 'patient_id' column, all patients will use the same data")
     return full_df
 
+# ------------- Initial Vitals Generation for High/Moderate Risk ------------
+def get_initial_vitals_high_risk():
+    """
+    Returns random vitals that typically result in HIGH risk (NEWS2 >= 7).
+    Uses combinations of abnormal values: hypotension, fever/hypothermia, tachypnea/bradypnea, etc.
+    These values ensure at least 7 points from non-HR/SpO2 parameters.
+    """
+    scenarios = [
+        # sys_bp <=90 (3pts) + temp >=39 (2pts) + rr >=25 (3pts) = 8pts minimum
+        {"sys_bp": random.randint(82, 90), "temp": random.uniform(39.1, 40.0), "rr": random.randint(25, 29), "consciousness": "A"},
+        # sys_bp <=90 (3pts) + rr <=8 (3pts) + consciousness=V (3pts) = 9pts minimum
+        {"sys_bp": random.randint(80, 88), "temp": random.uniform(36.2, 37.8), "rr": random.randint(5, 8), "consciousness": "V"},
+        # sys_bp <=100 (2pts) + temp >=39 (2pts) + rr >=25 (3pts) + consciousness=V (3pts) = 10pts minimum
+        {"sys_bp": random.randint(92, 100), "temp": random.uniform(39.0, 39.8), "rr": random.randint(25, 28), "consciousness": "V"},
+        # sys_bp <=90 (3pts) + temp <=35 (3pts) + rr 21-24 (2pts) = 8pts minimum
+        {"sys_bp": random.randint(82, 90), "temp": random.uniform(34.5, 35.0), "rr": random.randint(21, 24), "consciousness": "A"},
+    ]
+    return random.choice(scenarios)
+
+def get_initial_vitals_moderate_risk():
+    """
+    Returns random vitals that typically result in MODERATE risk (NEWS2 = 5-6).
+    Uses milder combinations that guarantee at least 5 points from non-HR/SpO2 parameters.
+    """
+    scenarios = [
+        # sys_bp 91-100 (2pts) + temp >=39 (2pts) + rr 21-24 (2pts) = 6pts
+        {"sys_bp": random.randint(91, 100), "temp": random.uniform(39.0, 39.5), "rr": random.randint(21, 24), "consciousness": "A"},
+        # sys_bp <=90 (3pts) + temp 36.1-38 (0pts) + rr 21-24 (2pts) = 5pts
+        {"sys_bp": random.randint(85, 90), "temp": random.uniform(36.5, 37.5), "rr": random.randint(21, 24), "consciousness": "A"},
+        # sys_bp 101-110 (1pt) + temp 35.1-36 (1pt) + rr 21-24 (2pts) + consciousness=V (3pts) = 7pts
+        # Actually this is HIGH, adjust to get 5-6
+        {"sys_bp": random.randint(101, 110), "temp": random.uniform(38.1, 38.9), "rr": random.randint(21, 24), "consciousness": "A"},
+        # sys_bp 91-100 (2pts) + temp 35.1-36 (1pt) + rr 21-24 (2pts) = 5pts
+        {"sys_bp": random.randint(91, 100), "temp": random.uniform(35.1, 36.0), "rr": random.randint(21, 24), "consciousness": "A"},
+    ]
+    return random.choice(scenarios)
+
 # ------------- Algorithm 1 Parameters ------------
 PARAMS={
  "HIGH":     dict(ic_fc=30,  eps_fc=2,  dc_fc=2,  ic_spo2=30,  eps_spo2=1, dc_spo2=1, t_sdt=15,  ic_max=30*60),
@@ -129,16 +217,61 @@ PARAMS={
 
 # --------------- Classes --------------------
 class Patient:
-    def __init__(self, pid, df, news2=0, persistent_high_risk=False, force_high_risk=False):
+    def __init__(self, pid, df, news2=0, persistent_high_risk=False, force_high_risk=False,
+                 spo2_scale=None, on_o2=None):
         self.id=pid; self.df=df; self.idx=random.randrange(len(df))
         self.persistent_high_risk=persistent_high_risk
         self.force_high_risk=force_high_risk
         self.scenario_step=0
+        
+        # Configure patient-specific parameters from config
+        self._configure_patient_params(spo2_scale, on_o2)
+        
         self.update_risk(news2)
         self.last_sent_fc=self._cur('hr'); self.last_sent_spo2=self._cur('spo2')
         self.fc_buf,self.spo2_buf=[],[]
         self.last_fc_col=self.last_spo2_col=time.time()
         self.stable_fc=self.stable_spo2=0
+    
+    def _configure_patient_params(self, spo2_scale, on_o2):
+        """Configure patient-specific parameters from config file or random assignment."""
+        # Check for patient-specific overrides first
+        overrides = CONFIG.get("patient_overrides", {}).get(str(self.id), {})
+        
+        # Get dataset-specific probabilities
+        dataset_config = CONFIG.get("datasets", {}).get(DATASET_TYPE, {})
+        probs = dataset_config.get("probabilities", {})
+        defaults = CONFIG.get("defaults", {})
+        
+        # SpO2 Scale: override > explicit param > random based on probability > default
+        if "spo2_scale" in overrides:
+            self.spo2_scale = overrides["spo2_scale"]
+        elif spo2_scale is not None:
+            self.spo2_scale = spo2_scale
+        elif random.random() < probs.get("spo2_scale_2", 0):
+            self.spo2_scale = 2
+        else:
+            self.spo2_scale = defaults.get("spo2_scale", 1)
+        
+        # On O2: override > explicit param > random based on probability > default
+        if "on_o2" in overrides:
+            self.on_o2 = overrides["on_o2"]
+        elif on_o2 is not None:
+            self.on_o2 = on_o2
+        elif random.random() < probs.get("on_o2", 0):
+            self.on_o2 = True
+        else:
+            self.on_o2 = defaults.get("on_o2", False)
+        
+        # Consciousness: only altered for high_risk with probability, unless overridden
+        if "consciousness" in overrides:
+            self.base_consciousness = overrides["consciousness"]
+        elif random.random() < probs.get("altered_consciousness", 0):
+            options = dataset_config.get("consciousness_options", ["V"])
+            self.base_consciousness = random.choice(options)
+        else:
+            self.base_consciousness = defaults.get("consciousness", "A")
+    
     def _cur(self,c):
         val = self.df.iloc[self.idx][c]
         return float(val) if pd.notna(val) else 0.0
@@ -149,7 +282,12 @@ class Patient:
         return {"timestamp":time.time(),"hr":float(hr_val),"spo2":float(spo2_val)}
 
     def update_risk(self,score):
-        if self.persistent_high_risk and score<7: score=7
+        # Persistent HIGH risk patients never drop below NEWS2=7
+        if self.persistent_high_risk and score<7: 
+            score=7
+        # For high_risk dataset: non-persistent patients should stay MODERATE or HIGH (never LOW/MINIMAL)
+        elif DATASET_TYPE == "high_risk" and not self.persistent_high_risk and score<5:
+            score=5  # Minimum MODERATE risk for variable patients
         old=getattr(self,'risk','N/A')
         self.news2=score
         self.risk=('HIGH' if score>=7 else 'MODERATE' if score>=5 else 'LOW' if score>=1 else 'MINIMAL')
@@ -176,29 +314,46 @@ class Patient:
             setattr(self,ic_attr,new); st=0
         setattr(self,st_attr,st); setattr(self,last_attr,latest)
 
-    def forced_vitals(self):
-        # Force HIGH risk (NEWS2 >= 7) for high_risk dataset
-        # Use actual HR and SpO2 from dataset, but override other vitals to ensure HIGH risk
-        if self.force_high_risk:
-            # Cycle through different HIGH risk scenarios for variety
-            # NOTE: HR and SpO2 come from the actual dataset, we only force other parameters
-            cycle = self.scenario_step % 4
-            self.scenario_step += 1
-            
-            if cycle == 0:
-                # Hypotension + Fever + Tachypnea (ensures NEWS2 >= 7 with dataset HR/SpO2)
-                return {"sys_bp":88, "temp":39.2, "rr":26, "consciousness":"A"}
-            elif cycle == 1:
-                # Severe hypotension + High temp + Tachypnea
-                return {"sys_bp":85, "temp":39.8, "rr":28, "consciousness":"A"}
-            elif cycle == 2:
-                # Hypotension + Altered consciousness (V=Voice) + Fever
-                return {"sys_bp":92, "temp":38.8, "rr":25, "consciousness":"V"}
-            else:
-                # Severe hypotension + Bradypnea + Hypothermia
-                return {"sys_bp":88, "temp":35.2, "rr":9, "consciousness":"A"}
+    def get_current_vitals(self):
+        """
+        Returns a complete vitals dictionary for NEWS2 calculation.
+        Includes HR and SpO2 from dataset, plus other parameters based on risk profile.
+        Uses patient-specific configuration for spo2_scale and on_o2.
+        """
+        # Get current HR and SpO2 from dataset
+        current_hr = self._cur('hr')
+        current_spo2 = self._cur('spo2')
         
-        return {}
+        # Base vitals with dataset values and patient-specific params
+        vitals = {
+            "hr": current_hr,
+            "spo2": current_spo2,
+            "spo2_scale": self.spo2_scale,
+            "on_o2": self.on_o2
+        }
+        
+        # For high_risk dataset: add forced parameters to ensure MODERATE or HIGH
+        if DATASET_TYPE == "high_risk":
+            if self.force_high_risk:
+                # Persistent HIGH patients get vitals that ensure NEWS2 >= 7
+                forced = get_initial_vitals_high_risk()
+            else:
+                # Variable patients get vitals that ensure NEWS2 = 5-6 (MODERATE)
+                forced = get_initial_vitals_moderate_risk()
+            # Use patient's base consciousness unless forced vitals override it
+            if "consciousness" not in forced or self.base_consciousness != "A":
+                forced["consciousness"] = self.base_consciousness
+            vitals.update(forced)
+        else:
+            # For low_risk dataset: use normal vitals with patient-specific consciousness
+            vitals.update({
+                "sys_bp": 120,
+                "temp": 36.5,
+                "rr": 18,
+                "consciousness": self.base_consciousness
+            })
+        
+        return vitals
 
 class Assembler:
     def __init__(self,cfg):
@@ -327,11 +482,25 @@ def main():
         # Force HIGH risk for high_risk dataset to simulate critical patients
         # Only force half of the patients to persistent HIGH risk (alternating)
         force_high = (DATASET_TYPE == "high_risk") and (i % 2 == 0)  # Even index patients stay HIGH
-        # Start with NEWS2=7 (HIGH risk) if forcing high risk
-        initial_news2 = 7 if force_high else 0
-        # persistent_high_risk ensures score never drops below 7
-        patients.append(Patient(pid, patient_df, news2=initial_news2, 
-                               persistent_high_risk=force_high, force_high_risk=force_high))
+        
+        # Start with a nominal NEWS2 score that will be updated by fog on first batch
+        # For high_risk: use higher initial scores to ensure proper risk category assignment
+        # For low_risk: start at 0 (MINIMAL) since data represents healthy individuals
+        if DATASET_TYPE == "high_risk":
+            initial_news2 = 7 if force_high else 5
+        else:
+            initial_news2 = 0  # Low risk dataset starts at MINIMAL
+        
+        # Create patient - config params (spo2_scale, on_o2) loaded from config file
+        patient = Patient(pid, patient_df, news2=initial_news2, 
+                         persistent_high_risk=force_high, force_high_risk=force_high)
+        
+        # Log patient configuration
+        risk_type = "PERSISTENT HIGH" if force_high else "VARIABLE"
+        log.info(f"  {pid}: spo2_scale={patient.spo2_scale}, on_o2={patient.on_o2}, "
+                f"consciousness={patient.base_consciousness} ({risk_type})")
+        
+        patients.append(patient)
     
     log.info("="*60)
     
@@ -369,9 +538,8 @@ def main():
                         prd_accumulator['hr'].append(prd_value)
                         log.info(f"  [HR DISTORTION] {p.id} PRD={prd_value:.4f}%")
 
-                        entry={'patient_id':p.id,'signal':'hr','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size}
-                        forced=p.forced_vitals(); 
-                        if forced: entry['forced_vitals']=forced
+                        vitals=p.get_current_vitals()
+                        entry={'patient_id':p.id,'signal':'hr','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size, 'vitals':vitals}
                         assembler.add(entry,p.risk)
                     p.fc_buf=[]; p.last_fc_col=now; p.backoff('hr',v['hr'])
                 
@@ -389,9 +557,8 @@ def main():
                         prd_accumulator['spo2'].append(prd_value)
                         log.info(f"  [SpO2 DISTORTION] {p.id} PRD={prd_value:.4f}%")
 
-                        entry={'patient_id':p.id,'signal':'spo2','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size}
-                        forced=p.forced_vitals(); 
-                        if forced: entry['forced_vitals']=forced
+                        vitals=p.get_current_vitals()
+                        entry={'patient_id':p.id,'signal':'spo2','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size, 'vitals':vitals}
                         assembler.add(entry,p.risk)
                     p.spo2_buf=[]; p.last_spo2_col=now; p.backoff('spo2',v['spo2'])
             

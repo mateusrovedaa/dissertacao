@@ -30,8 +30,6 @@ logging.basicConfig(level=logging.INFO,
     force=True)
 log = logging.getLogger("vispac-fog")
 log.setLevel(logging.INFO)
-log.addHandler(file_handler)
-log.addHandler(stream_handler)
 
 # MQTT client storage
 mqtt_client = None
@@ -115,12 +113,14 @@ def score_spo2(spo2, scale, on_o2):
         if spo2<=83: return 3
         if spo2<=85: return 2
         if spo2<=87: return 1
-        if not on_o2 and spo2<=92: return 0
+        if spo2<=92: return 0
+        # spo2 > 92 on scale 2
         if on_o2:
-            if spo2<=92: return 0
             if spo2<=94: return 1
             if spo2<=96: return 2
             return 3
+        else:
+            return 0  # SpO2 > 92 without O2 on scale 2 is normal
     else:
         if spo2<=91: return 3
         if spo2<=93: return 2
@@ -211,14 +211,35 @@ def _process_batch_payload(ctype: str, raw_bytes: bytes):
     scores = {}
     to_cloud: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
     for pkg in batch:
+        # Start with defaults
         vidict = Vitals().model_dump()
-        if "forced_vitals" in pkg:
-            vidict.update(pkg["forced_vitals"])
+        
+        # Use vitals sent by edge if available
+        if "vitals" in pkg:
+            # Update with provided vitals (keeping defaults for missing fields)
+            for key, value in pkg["vitals"].items():
+                if value is not None:
+                    vidict[key] = value
         else:
+            # Fallback for legacy packets without vitals
             signal = pkg.get("signal")
             if pkg.get("data"):
                 vidict[signal] = pkg["data"][-1][1]
-        total = calculate(Vitals(**vidict))
+            if "forced_vitals" in pkg:
+                for key, value in pkg["forced_vitals"].items():
+                    if value is not None:
+                        vidict[key] = value
+        
+        # Debug: Check for None values before calculation
+        none_fields = [k for k, v in vidict.items() if v is None]
+        if none_fields:
+            log.warning(f"Patient {pkg.get('patient_id')}: None values in fields: {none_fields}, vidict={vidict}")
+        
+        try:
+            total = calculate(Vitals(**vidict))
+        except Exception as e:
+            log.error(f"Calculate error for patient {pkg.get('patient_id')}: {e}, vidict={vidict}")
+            raise
         scores[pkg["patient_id"]] = total
         risco = _risk_from_score(total)
     # Forward a snapshot of vitals used in calculation; omit raw_size/post_sdt_size

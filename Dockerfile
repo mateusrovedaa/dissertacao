@@ -35,6 +35,9 @@ COPY compressors.py .
 # Copy datasets
 COPY datasets/ ./datasets/
 
+# Copy configuration
+COPY config/ ./config/
+
 CMD ["python", "vispac_edge_prototype.py"]
 
 # =============================================================================

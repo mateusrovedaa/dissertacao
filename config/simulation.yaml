@@ -1,0 +1,59 @@
+# ============================================================
+# VISPAC Simulation Configuration
+# ============================================================
+# This file configures the patient simulation parameters.
+# Edit this file to customize the simulation without changing code.
+# ============================================================
+
+# Global defaults (applied to all patients unless overridden)
+defaults:
+  spo2_scale: 1          # 1 = Standard scale, 2 = Scale for hypercapnic respiratory failure
+  on_o2: false           # Whether patient is on supplemental oxygen
+  consciousness: "A"     # A=Alert, C=Confusion, V=Voice, P=Pain, U=Unresponsive
+
+# Dataset-specific settings
+datasets:
+  high_risk:
+    # Probability settings for random assignment (0.0 to 1.0)
+    probabilities:
+      on_o2: 0.4           # 40% of patients on O2
+      spo2_scale_2: 0.3    # 30% use scale 2 (hypercapnic)
+      altered_consciousness: 0.2  # 20% have altered consciousness (V, P, or U)
+    
+    # Risk distribution for variable patients (non-persistent)
+    # These are the possible consciousness states when altered
+    consciousness_options: ["V", "P"]  # V=Voice, P=Pain (U=Unresponsive is too severe)
+    
+  low_risk:
+    probabilities:
+      on_o2: 0.1           # 10% of patients on O2
+      spo2_scale_2: 0.05   # 5% use scale 2
+      altered_consciousness: 0.02  # 2% have altered consciousness
+
+# Per-patient overrides (optional)
+# Use patient_id from dataset to override specific patients
+# Example:
+# patient_overrides:
+#   "1":
+#     spo2_scale: 2
+#     on_o2: true
+#   "5":
+#     consciousness: "V"
+#     on_o2: true
+patient_overrides: {}
+
+# Vital signs ranges for forced values (used to ensure MODERATE/HIGH risk)
+vitals_ranges:
+  high_risk:
+    # These ranges ensure NEWS2 >= 7 (HIGH)
+    sys_bp: [85, 95]       # Hypotension
+    temp_high: [38.8, 39.8]  # Fever
+    temp_low: [35.0, 35.8]   # Hypothermia
+    rr_high: [25, 29]      # Tachypnea
+    rr_low: [8, 10]        # Bradypnea
+    
+  moderate_risk:
+    # These ranges ensure NEWS2 = 5-6 (MODERATE)
+    sys_bp: [95, 108]      # Borderline hypotension
+    temp: [38.1, 39.0]     # Mild fever
+    rr: [21, 24]           # Mild tachypnea
