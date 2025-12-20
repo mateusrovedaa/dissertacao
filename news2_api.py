@@ -1,8 +1,9 @@
 from typing import Dict, Any, List, DefaultDict
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Body, BackgroundTasks
 from pydantic import BaseModel
-import json, uvicorn
+import json, uvicorn, logging
 import os, requests
 try:
     import paho.mqtt.client as mqtt
@@ -10,7 +11,95 @@ except Exception:
     mqtt = None
 from compressors import LZW, Huffman
 
-app = FastAPI(title="ViSPAC Scoring & Decompression API v2")
+# Ensure logs directory exists
+LOG_PATH = "logs/fog_log.txt"
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+
+# Configure logging with unbuffered file handler
+file_handler = logging.FileHandler(LOG_PATH, 'a')
+file_handler.setLevel(logging.INFO)
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+file_handler.setFormatter(formatter)
+stream_handler.setFormatter(formatter)
+
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[file_handler, stream_handler],
+    force=True)
+log = logging.getLogger("vispac-fog")
+log.setLevel(logging.INFO)
+log.addHandler(file_handler)
+log.addHandler(stream_handler)
+
+# MQTT client storage
+mqtt_client = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan context for MQTT listener initialization"""
+    global mqtt_client
+    # Startup: Initialize MQTT listener
+    if mqtt is not None:
+        broker = os.environ.get('MQTT_BROKER','127.0.0.1')
+        port = int(os.environ.get('MQTT_PORT','1883'))
+        mqtt_client = mqtt.Client()
+        
+        def on_message(client, userdata, message):
+            try:
+                data = json.loads(message.payload.decode())
+                reply_topic = data.get('reply_topic')
+                ctype = data.get('X-Compression-Type','none').lower()
+                raw_payload = data.get('payload','').encode()
+                log.info(f"[MQTT] Received message: {len(raw_payload)} bytes, compression={ctype}")
+                for handler in log.handlers:
+                    handler.flush()
+                try:
+                    scores, to_cloud = _process_batch_payload(ctype, raw_payload)
+                    log.info(f"[MQTT] Processed batch: {len(scores)} patients")
+                    for handler in log.handlers:
+                        handler.flush()
+                except HTTPException as e:
+                    log.error(f"[MQTT] Processing error: {e}")
+                    for handler in log.handlers:
+                        handler.flush()
+                    if reply_topic:
+                        client.publish(reply_topic, json.dumps({'error': str(e)}))
+                    return
+                # forward to cloud
+                _forward_to_cloud(to_cloud)
+                # respond
+                if reply_topic:
+                    client.publish(reply_topic, json.dumps({'scores': scores}))
+                    log.info(f"[MQTT] Sent response to {reply_topic}: {len(scores)} scores")
+                    for handler in log.handlers:
+                        handler.flush()
+            except Exception as e:
+                log.error(f"MQTT handler error: {e}")
+                for handler in log.handlers:
+                    handler.flush()
+        
+        mqtt_client.on_message = on_message
+        try:
+            mqtt_client.connect(broker, port, 60)
+            mqtt_client.subscribe('vispac/upload_batch')
+            mqtt_client.loop_start()
+            log.info(f"MQTT listener started on {broker}:{port} topic vispac/upload_batch")
+        except Exception as e:
+            log.error(f"MQTT connect failed: {e}")
+    else:
+        log.warning("paho-mqtt not installed; MQTT listener disabled.")
+    
+    yield
+    
+    # Shutdown: Cleanup MQTT client
+    if mqtt_client:
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
+        log.info("MQTT listener stopped")
+
+app = FastAPI(title="ViSPAC Scoring & Decompression API v2", lifespan=lifespan)
 
 class Vitals(BaseModel):
     rr: float = 18;   spo2: float = 98; spo2_scale: int = 1
@@ -85,17 +174,21 @@ def _forward_to_cloud(grouped: DefaultDict[str, List[Dict[str, Any]]]):
             continue
         path = risk.lower()  # "HIGH" → "high", "MODERATE" → "moderate", etc.
         url = f"{base}/cloud/ingest/{path}"
+        log.info(f"Forwarding {len(items)} items to cloud ({risk})")
         try:
             requests.post(url, json=items, timeout=10)
+            log.info(f"Successfully forwarded {len(items)} items to cloud ({risk})")
         except Exception as e:
             # Best-effort forwarding; don't fail the response to edge
-            print(f"[FOG] Failed to forward to cloud {url}: {e}")
+            log.error(f"Failed to forward to cloud {url}: {e}")
 
 @app.post("/vispac/upload_batch")
 async def upload_batch(req: Request, background_tasks: BackgroundTasks) -> Dict[str, Any]:
     ctype = req.headers.get("X-Compression-Type","none").lower()
     raw = await req.body()
+    log.info(f"Received batch: {len(raw)} bytes, compression={ctype}")
     scores, to_cloud = _process_batch_payload(ctype, raw)
+    log.info(f"Processed batch: {len(scores)} patients, forwarding to cloud")
     background_tasks.add_task(_forward_to_cloud, to_cloud)
     return {"batch_processed": len(scores), "scores": scores}
 
@@ -150,48 +243,7 @@ def _process_batch_payload(ctype: str, raw_bytes: bytes):
     return scores, to_cloud
 
 
-@app.on_event("startup")
-def _start_mqtt_listener():
-    """If paho-mqtt is available, starts an MQTT client in background
-    to receive messages from edge and respond with scores."""
-    if mqtt is None:
-        print("[FOG] paho-mqtt not installed; MQTT listener disabled.")
-        return
-
-    broker = os.environ.get('MQTT_BROKER','127.0.0.1')
-    port = int(os.environ.get('MQTT_PORT','1883'))
-    client = mqtt.Client()
-
-    def on_message(client, userdata, message):
-        try:
-            data = json.loads(message.payload.decode())
-            reply_topic = data.get('reply_topic')
-            ctype = data.get('X-Compression-Type','none').lower()
-            raw_payload = data.get('payload','').encode()
-            try:
-                scores, to_cloud = _process_batch_payload(ctype, raw_payload)
-            except HTTPException as e:
-                # publish error
-                if reply_topic:
-                    client.publish(reply_topic, json.dumps({'error': str(e)}))
-                return
-            # forward to cloud
-            _forward_to_cloud(to_cloud)
-            # respond
-            if reply_topic:
-                client.publish(reply_topic, json.dumps({'scores': scores}))
-        except Exception as e:
-            print(f"[FOG MQTT] handler error: {e}")
-
-    client.on_message = on_message
-    try:
-        client.connect(broker, port, 60)
-        client.subscribe('vispac/upload_batch')
-        client.loop_start()
-        print(f"[FOG] MQTT listener started on {broker}:{port} topic vispac/upload_batch")
-    except Exception as e:
-        print(f"[FOG] MQTT connect failed: {e}")
-
 if __name__ == "__main__":
     # FOG layer API
-    uvicorn.run("__main__:app", host="0.0.0.0", port=8000, reload=True)
+    log.info("Starting FOG API on port 8000")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_config=None)

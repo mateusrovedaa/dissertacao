@@ -22,7 +22,9 @@ services:
       retries: 10
 
   cloud:
-    build: .
+    build:
+      context: .
+      target: cloud
     command: python cloud_api.py
     environment:
       CLOUD_DB_URL: postgresql://vispac:vispac@db:5432/vispac
@@ -31,9 +33,13 @@ services:
         condition: service_healthy
     ports:
       - "9000:9000"
+    volumes:
+      - ./logs:/app/logs
 
   fog:
-    build: .
+    build:
+      context: .
+      target: fog
     command: python news2_api.py
     environment:
       CLOUD_BASE_URL: http://cloud:9000
@@ -44,11 +50,17 @@ services:
       - mqtt
     ports:
       - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
 
   edge:
-    build: .
+    build:
+      context: .
+      target: edge
     command: python vispac_edge_prototype.py
     environment:
+      DATASET_TYPE: high_risk  # Options: low_risk or high_risk
+      NUM_PATIENTS: 0  # Number of patients to simulate (0 = all available, default 7 for testing)
       API_URL: http://fog:8000/vispac/upload_batch
       EDGE_USE_MQTT: "1"
       MQTT_BROKER: mqtt
@@ -56,3 +68,5 @@ services:
     depends_on:
       - fog
       - mqtt
+    volumes:
+      - ./logs:/app/logs

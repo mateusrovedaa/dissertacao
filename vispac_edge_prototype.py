@@ -15,6 +15,9 @@ DATASET_PATHS = {
 }
 DATASET_PATH = DATASET_PATHS.get(DATASET_TYPE, DATASET_PATHS["default"])
 
+# Number of patients to simulate (0 = all available)
+NUM_PATIENTS = int(os.environ.get("NUM_PATIENTS", "0"))
+
 LOG_PATH = "logs/edge_log.txt"
 K_STABLE = 3
 KEEP_ALIVE = 600
@@ -126,9 +129,10 @@ PARAMS={
 
 # --------------- Classes --------------------
 class Patient:
-    def __init__(self, pid, df, news2=0, persistent_high_risk=False):
+    def __init__(self, pid, df, news2=0, persistent_high_risk=False, force_high_risk=False):
         self.id=pid; self.df=df; self.idx=random.randrange(len(df))
         self.persistent_high_risk=persistent_high_risk
+        self.force_high_risk=force_high_risk
         self.scenario_step=0
         self.update_risk(news2)
         self.last_sent_fc=self._cur('hr'); self.last_sent_spo2=self._cur('spo2')
@@ -173,15 +177,27 @@ class Patient:
         setattr(self,st_attr,st); setattr(self,last_attr,latest)
 
     def forced_vitals(self):
-        if self.id=="PID-004":
-            cycle=self.scenario_step%3; self.scenario_step+=1
-            if cycle==1: return {"hr":100,"temp":38.5}
-            elif cycle==2: return {"hr":120,"sys_bp":95,"temp":39.5}
-        elif self.id=="PID-005":
-            if self.scenario_step==0: self.scenario_step+=1; return {"hr":120,"sys_bp":95,"temp":39.5}
-            elif self.scenario_step==1: self.scenario_step+=1; return {"hr":100,"temp":38.5}
-        elif self.persistent_high_risk:
-            return {"hr":130,"spo2":86,"rr":30,"temp":39.5,"sys_bp":85,"consciousness":"V"}
+        # Force HIGH risk (NEWS2 >= 7) for high_risk dataset
+        # Use actual HR and SpO2 from dataset, but override other vitals to ensure HIGH risk
+        if self.force_high_risk:
+            # Cycle through different HIGH risk scenarios for variety
+            # NOTE: HR and SpO2 come from the actual dataset, we only force other parameters
+            cycle = self.scenario_step % 4
+            self.scenario_step += 1
+            
+            if cycle == 0:
+                # Hypotension + Fever + Tachypnea (ensures NEWS2 >= 7 with dataset HR/SpO2)
+                return {"sys_bp":88, "temp":39.2, "rr":26, "consciousness":"A"}
+            elif cycle == 1:
+                # Severe hypotension + High temp + Tachypnea
+                return {"sys_bp":85, "temp":39.8, "rr":28, "consciousness":"A"}
+            elif cycle == 2:
+                # Hypotension + Altered consciousness (V=Voice) + Fever
+                return {"sys_bp":92, "temp":38.8, "rr":25, "consciousness":"V"}
+            else:
+                # Severe hypotension + Bradypnea + Hypothermia
+                return {"sys_bp":88, "temp":35.2, "rr":9, "consciousness":"A"}
+        
         return {}
 
 class Assembler:
@@ -285,8 +301,11 @@ def main():
     # Detect available IDs in dataset
     if 'patient_id' in full_df.columns:
         available_ids = sorted(full_df['patient_id'].unique())
-        # Use first 7 available IDs (or as many as available)
-        num_patients = min(7, len(available_ids))
+        # Use configured number of patients (0 = all available)
+        if NUM_PATIENTS > 0:
+            num_patients = min(NUM_PATIENTS, len(available_ids))
+        else:
+            num_patients = len(available_ids)
         patient_ids = [str(available_ids[i]) for i in range(num_patients)]
         log.info(f"IDs detected in dataset: {len(available_ids)} unique")
         log.info(f"Using {num_patients} patients: {patient_ids}")
@@ -305,9 +324,14 @@ def main():
     
     for i, pid in enumerate(patient_ids):
         patient_df = load_patient_specific_data(pid, full_df)
-        # All patients start without special configuration
-        # Risk will be calculated dynamically by NEWS2
-        patients.append(Patient(pid, patient_df))
+        # Force HIGH risk for high_risk dataset to simulate critical patients
+        # Only force half of the patients to persistent HIGH risk (alternating)
+        force_high = (DATASET_TYPE == "high_risk") and (i % 2 == 0)  # Even index patients stay HIGH
+        # Start with NEWS2=7 (HIGH risk) if forcing high risk
+        initial_news2 = 7 if force_high else 0
+        # persistent_high_risk ensures score never drops below 7
+        patients.append(Patient(pid, patient_df, news2=initial_news2, 
+                               persistent_high_risk=force_high, force_high_risk=force_high))
     
     log.info("="*60)
     
@@ -339,12 +363,11 @@ def main():
                         reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
                         log.info(f"[HR COLLECT] {p.id} {p.risk} | {len(p.fc_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
                         
-                        if p.risk == 'HIGH':
-                            original_signal_values = [point[1] for point in p.fc_buf]
-                            reconstructed_signal = reconstruct_signal(p.fc_buf, comp)
-                            prd_value = calculate_prd(original_signal_values, reconstructed_signal)
-                            prd_accumulator['hr'].append(prd_value)
-                            log.info(f"  [HR DISTORTION] {p.id} PRD={prd_value:.4f}%")
+                        original_signal_values = [point[1] for point in p.fc_buf]
+                        reconstructed_signal = reconstruct_signal(p.fc_buf, comp)
+                        prd_value = calculate_prd(original_signal_values, reconstructed_signal)
+                        prd_accumulator['hr'].append(prd_value)
+                        log.info(f"  [HR DISTORTION] {p.id} PRD={prd_value:.4f}%")
 
                         entry={'patient_id':p.id,'signal':'hr','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size}
                         forced=p.forced_vitals(); 
@@ -360,12 +383,11 @@ def main():
                         reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
                         log.info(f"[SpO2 COLLECT] {p.id} {p.risk} | {len(p.spo2_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
                         
-                        if p.risk == 'HIGH':
-                            original_signal_values = [point[1] for point in p.spo2_buf]
-                            reconstructed_signal = reconstruct_signal(p.spo2_buf, comp)
-                            prd_value = calculate_prd(original_signal_values, reconstructed_signal)
-                            prd_accumulator['spo2'].append(prd_value)
-                            log.info(f"  [SpO2 DISTORTION] {p.id} PRD={prd_value:.4f}%")
+                        original_signal_values = [point[1] for point in p.spo2_buf]
+                        reconstructed_signal = reconstruct_signal(p.spo2_buf, comp)
+                        prd_value = calculate_prd(original_signal_values, reconstructed_signal)
+                        prd_accumulator['spo2'].append(prd_value)
+                        log.info(f"  [SpO2 DISTORTION] {p.id} PRD={prd_value:.4f}%")
 
                         entry={'patient_id':p.id,'signal':'spo2','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size}
                         forced=p.forced_vitals(); 
@@ -387,7 +409,7 @@ def main():
 
     finally:
         log.info("="*50)
-        log.info("Simulation ended. PRD statistics for HIGH Risk (PID-001):")
+        log.info("Simulation ended. PRD statistics for all patients:")
         if prd_accumulator['hr']:
             avg_hr = np.mean(prd_accumulator['hr'])
             min_hr = np.min(prd_accumulator['hr'])

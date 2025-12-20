@@ -2,8 +2,30 @@ from typing import List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body, Path
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-import sqlite3, json, os
+import sqlite3, json, os, logging
 import uvicorn
+
+# Ensure logs directory exists
+LOG_PATH = "logs/cloud_log.txt"
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+
+# Configure logging with unbuffered file handler
+file_handler = logging.FileHandler(LOG_PATH, 'a')
+file_handler.setLevel(logging.INFO)
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+file_handler.setFormatter(formatter)
+stream_handler.setFormatter(formatter)
+
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[file_handler, stream_handler],
+    force=True)
+log = logging.getLogger("vispac-cloud")
+log.setLevel(logging.INFO)
+log.addHandler(file_handler)
+log.addHandler(stream_handler)
 
 DB_PATH = os.environ.get("CLOUD_DB_PATH", "cloud_data.sqlite3")
 DB_URL = os.environ.get("CLOUD_DB_URL", "")
@@ -14,10 +36,10 @@ async def lifespan(app: FastAPI):
     try:
         conn = get_conn()
         conn.close()
-        print("[cloud_api] Database schema ensured at startup.")
+        log.info("Database schema ensured at startup.")
     except Exception as e:
     # Defensive logging; compose should wait for DB health, but just in case
-        print(f"[cloud_api] Database init on startup failed: {e}")
+        log.error(f"Database init on startup failed: {e}")
     yield
     # No shutdown actions required
 
@@ -105,6 +127,7 @@ async def ingest_by_risk(
     if r not in RISK_VALUES:
         raise HTTPException(400, f"Invalid risk stream: {risk}")
 
+    log.info(f"Received {len(items)} items for {risk.upper()} risk stream")
     # Optional validation: ensure each item has risk compatible with path
     for it in items:
     # Allow for case differences; normalize both
@@ -171,12 +194,15 @@ async def ingest_by_risk(
             )
             conn.commit(); conn.close()
     except Exception as e:
+        log.error(f"DB error storing {len(items)} items: {e}")
         raise HTTPException(500, f"DB error: {e}")
 
+    log.info(f"Successfully stored {len(items)} items to DB ({risk.upper()})")
     return {"accepted": len(items), "risk": r}
 
 
 if __name__ == "__main__":
     # CLOUD layer API
     # Run the app object directly to ensure lifespan runs reliably in containers
-    uvicorn.run(app, host="0.0.0.0", port=9000)
+    log.info("Starting CLOUD API on port 9000")
+    uvicorn.run(app, host="0.0.0.0", port=9000, log_config=None)
