@@ -64,6 +64,9 @@ CONFIG = load_config()
 # ---------------- Constants ----------------
 API_URL = os.environ.get("API_URL", "http://127.0.0.1:8000/vispac/upload_batch")
 
+# Edge Identification
+EDGE_ID = os.environ.get("EDGE_ID", f"edge-{uuid.uuid4().hex[:8]}")
+
 # Dataset Configuration
 DATASET_TYPE = os.environ.get("DATASET_TYPE", "low_risk")  # low_risk or high_risk
 DATASET_PATHS = {
@@ -73,7 +76,11 @@ DATASET_PATHS = {
 }
 DATASET_PATH = DATASET_PATHS.get(DATASET_TYPE, DATASET_PATHS["default"])
 
-# Number of patients to simulate (0 = all available)
+# Patient Range: "1-10" means patients 1 to 10, "5,10,15" means specific patients
+# Empty or "all" means all available patients
+PATIENT_RANGE = os.environ.get("PATIENT_RANGE", "all")
+
+# Number of patients to simulate (0 = all available) - DEPRECATED, use PATIENT_RANGE
 NUM_PATIENTS = int(os.environ.get("NUM_PATIENTS", "0"))
 K_STABLE = 3
 KEEP_ALIVE = 600
@@ -85,6 +92,82 @@ ASSEMBLER_CONFIG = {
     "LOW":      {"timeout": 150, "size_limit": 50 * 1024},
     "MINIMAL":  {"timeout": 300, "size_limit": 50 * 1024},
 }
+
+# Latency metrics storage
+LATENCY_METRICS = {
+    "send_count": 0,
+    "total_latency_ms": 0,
+    "min_latency_ms": float('inf'),
+    "max_latency_ms": 0,
+    "by_risk": {"HIGH": [], "MODERATE": [], "LOW": [], "MINIMAL": []}
+}
+
+def parse_patient_range(range_str, available_ids):
+    """
+    Parse PATIENT_RANGE environment variable.
+    Supports:
+    - "all" or empty: all available patients
+    - "1-10": range from index 1 to 10 (1-based, inclusive)
+    - "5,10,15,20": specific patient IDs
+    - "0:5" or "10:20": slice notation (0-based)
+    """
+    if not range_str or range_str.lower() == "all":
+        return available_ids
+    
+    range_str = range_str.strip()
+    
+    # Slice notation: "0:5" means first 5 patients
+    if ":" in range_str:
+        parts = range_str.split(":")
+        start = int(parts[0]) if parts[0] else 0
+        end = int(parts[1]) if parts[1] else len(available_ids)
+        return available_ids[start:end]
+    
+    # Range notation: "1-10" means patients at indices 1 to 10 (1-based, inclusive)
+    if "-" in range_str and range_str.count("-") == 1:
+        parts = range_str.split("-")
+        try:
+            start = int(parts[0]) - 1  # Convert to 0-based
+            end = int(parts[1])  # Inclusive, so no -1
+            return available_ids[max(0, start):min(end, len(available_ids))]
+        except ValueError:
+            pass
+    
+    # Comma-separated IDs: "5,10,15,20"
+    if "," in range_str:
+        requested_ids = [x.strip() for x in range_str.split(",")]
+        # Try to match by ID value
+        str_available = [str(x) for x in available_ids]
+        matched = [available_ids[str_available.index(rid)] for rid in requested_ids if rid in str_available]
+        return matched if matched else available_ids
+    
+    # Single patient ID
+    try:
+        idx = int(range_str) - 1  # Assume 1-based index
+        if 0 <= idx < len(available_ids):
+            return [available_ids[idx]]
+    except ValueError:
+        # Try to match by ID string
+        str_available = [str(x) for x in available_ids]
+        if range_str in str_available:
+            return [available_ids[str_available.index(range_str)]]
+    
+    log.warning(f"Could not parse PATIENT_RANGE '{range_str}', using all patients")
+    return available_ids
+
+def log_latency_summary():
+    """Log summary of latency metrics."""
+    m = LATENCY_METRICS
+    if m["send_count"] == 0:
+        return
+    avg = m["total_latency_ms"] / m["send_count"]
+    log.info(f"[LATENCY SUMMARY] Edge {EDGE_ID}")
+    log.info(f"  Total sends: {m['send_count']}")
+    log.info(f"  Avg latency: {avg:.1f}ms | Min: {m['min_latency_ms']:.1f}ms | Max: {m['max_latency_ms']:.1f}ms")
+    for risk, latencies in m["by_risk"].items():
+        if latencies:
+            avg_risk = sum(latencies) / len(latencies)
+            log.info(f"  {risk}: {len(latencies)} sends, avg {avg_risk:.1f}ms")
 
 def reconstruct_signal(original_signal_buf, compressed_signal):
     """
@@ -404,7 +487,13 @@ def send_batch(batch_info):
         try:
             import paho.mqtt.client as mqtt
             resp_topic = f"vispac/resp/{uuid.uuid4()}"
-            msg = json.dumps({'reply_topic': resp_topic, 'X-Compression-Type': hdr, 'payload': payload.decode()})
+            msg = json.dumps({
+                'edge_id': EDGE_ID,
+                'reply_topic': resp_topic, 
+                'X-Compression-Type': hdr, 
+                'payload': payload.decode(),
+                'send_timestamp': time.time()
+            })
 
             q = []
             received = {'data': None}
@@ -431,19 +520,43 @@ def send_batch(batch_info):
             client.loop_stop(); client.disconnect()
             resp = received['data'] or {}
             elapsed=time.time()-start
+            latency_ms = elapsed * 1000
+            
+            # Update latency metrics
+            LATENCY_METRICS["send_count"] += 1
+            LATENCY_METRICS["total_latency_ms"] += latency_ms
+            LATENCY_METRICS["min_latency_ms"] = min(LATENCY_METRICS["min_latency_ms"], latency_ms)
+            LATENCY_METRICS["max_latency_ms"] = max(LATENCY_METRICS["max_latency_ms"], latency_ms)
+            LATENCY_METRICS["by_risk"][risk].append(latency_ms)
+            
             ratio=100*final_size/total_raw_size if total_raw_size>0 else 0
-            log.info(f"[MQTT SEND] Batch '{risk}' | {len(batch)} pkts | {total_raw_size}b→{final_size}b ({ratio:.1f}%) | {hdr} | {elapsed:.3f}s | scores={resp.get('scores')}")
+            log.info(f"[MQTT SEND] {EDGE_ID} | Batch '{risk}' | {len(batch)} pkts | {total_raw_size}b→{final_size}b ({ratio:.1f}%) | {hdr} | {latency_ms:.1f}ms | scores={resp.get('scores')}")
             return resp.get('scores',{})
         except Exception as e:
             log.error(f"Failed to send batch via MQTT: {e}")
             return {}
 
     try:
-        r=requests.post(API_URL,data=payload,headers={'X-Compression-Type':hdr,'Content-Type':'application/json'},timeout=10)
+        headers = {
+            'X-Compression-Type': hdr,
+            'Content-Type': 'application/json',
+            'X-Edge-ID': EDGE_ID,
+            'X-Send-Timestamp': str(time.time())
+        }
+        r=requests.post(API_URL, data=payload, headers=headers, timeout=10)
         r.raise_for_status(); resp=r.json()
         elapsed=time.time()-start
+        latency_ms = elapsed * 1000
+        
+        # Update latency metrics
+        LATENCY_METRICS["send_count"] += 1
+        LATENCY_METRICS["total_latency_ms"] += latency_ms
+        LATENCY_METRICS["min_latency_ms"] = min(LATENCY_METRICS["min_latency_ms"], latency_ms)
+        LATENCY_METRICS["max_latency_ms"] = max(LATENCY_METRICS["max_latency_ms"], latency_ms)
+        LATENCY_METRICS["by_risk"][risk].append(latency_ms)
+        
         ratio=100*final_size/total_raw_size if total_raw_size>0 else 0
-        log.info(f"[SEND] Batch '{risk}' | {len(batch)} pkts | {total_raw_size}b→{final_size}b ({ratio:.1f}%) | {hdr} | {elapsed:.3f}s | scores={resp.get('scores')}")
+        log.info(f"[SEND] {EDGE_ID} | Batch '{risk}' | {len(batch)} pkts | {total_raw_size}b→{final_size}b ({ratio:.1f}%) | {hdr} | {latency_ms:.1f}ms | scores={resp.get('scores')}")
         return resp.get('scores',{})
     except Exception as e:
         log.error(f"Failed to send batch: {e}")
@@ -456,14 +569,17 @@ def main():
     # Detect available IDs in dataset
     if 'patient_id' in full_df.columns:
         available_ids = sorted(full_df['patient_id'].unique())
-        # Use configured number of patients (0 = all available)
-        if NUM_PATIENTS > 0:
-            num_patients = min(NUM_PATIENTS, len(available_ids))
-        else:
-            num_patients = len(available_ids)
-        patient_ids = [str(available_ids[i]) for i in range(num_patients)]
+        
+        # Use PATIENT_RANGE to select which patients this edge handles
+        selected_ids = parse_patient_range(PATIENT_RANGE, available_ids)
+        
+        # Legacy NUM_PATIENTS support (if PATIENT_RANGE not set and NUM_PATIENTS > 0)
+        if PATIENT_RANGE.lower() == "all" and NUM_PATIENTS > 0:
+            selected_ids = selected_ids[:NUM_PATIENTS]
+        
+        patient_ids = [str(pid) for pid in selected_ids]
         log.info(f"IDs detected in dataset: {len(available_ids)} unique")
-        log.info(f"Using {num_patients} patients: {patient_ids}")
+        log.info(f"PATIENT_RANGE: '{PATIENT_RANGE}' → selected {len(patient_ids)} patients: {patient_ids}")
     else:
         # Fallback to generic IDs if there's no patient_id column
         patient_ids = ["PID-001", "PID-002", "PID-003", "PID-004", "PID-005", "PID-006", "PID-007"]
@@ -473,7 +589,9 @@ def main():
     
     log.info("="*60)
     log.info(f"VISPAC SIMULATION STARTED")
+    log.info(f"  Edge ID: {EDGE_ID}")
     log.info(f"  Dataset: {DATASET_TYPE.upper()}")
+    log.info(f"  Patients: {len(patient_ids)} ({patient_ids[0]} to {patient_ids[-1]})")
     log.info("="*60)
     log.info("Loading patient data:")
     
@@ -576,7 +694,8 @@ def main():
 
     finally:
         log.info("="*50)
-        log.info("Simulation ended. PRD statistics for all patients:")
+        log.info(f"Simulation ended for Edge {EDGE_ID}")
+        log.info("PRD statistics for all patients:")
         if prd_accumulator['hr']:
             avg_hr = np.mean(prd_accumulator['hr'])
             min_hr = np.min(prd_accumulator['hr'])
@@ -587,6 +706,8 @@ def main():
             min_spo2 = np.min(prd_accumulator['spo2'])
             max_spo2 = np.max(prd_accumulator['spo2'])
             log.info(f"  SpO2:    Mean={avg_spo2:.4f}% | Min={min_spo2:.4f}% | Max={max_spo2:.4f}%")
+        log.info("-"*50)
+        log_latency_summary()
         log.info("="*50)
 
 

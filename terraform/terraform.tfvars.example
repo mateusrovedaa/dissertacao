@@ -1,0 +1,36 @@
+# =============================================================================
+# Example terraform.tfvars
+# Copy this file to terraform.tfvars and fill in the values
+# =============================================================================
+
+# AWS Region
+aws_region = "us-east-1"
+
+# Project naming
+project_name = "vispac"
+environment  = "dev"
+
+# SSH public key (generate with: ssh-keygen -t rsa -b 4096 -f ~/.ssh/vispac)
+ssh_public_key = "ssh-rsa AAAA... your-email@example.com"
+
+# SSH access restriction (use your IP for security)
+allowed_ssh_cidrs = ["YOUR_IP/32"]  # e.g., ["203.0.113.50/32"]
+
+# Instance configuration
+edge_count         = 4          # Number of edge devices
+edge_instance_type = "t3.micro" # 2 vCPU, 1GB RAM
+fog_instance_type  = "t3.small" # 2 vCPU, 2GB RAM  
+cloud_instance_type = "t3.small" # 2 vCPU, 2GB RAM
+
+# Edge resource limits (simulating constrained IoT devices)
+edge_memory_limit_mb   = 256    # 256MB RAM limit
+edge_cpu_limit_percent = 50     # 50% of 1 vCPU
+
+# Application configuration
+git_repo_url   = "https://github.com/YOUR_USER/dissertacao.git"
+git_branch     = "main"
+dataset_type   = "high_risk"
+total_patients = 53  # BIDMC has 53 patients
+
+# Database password (change this!)
+db_password = "your-secure-password-here"
