@@ -1,4 +1,68 @@
-import time, json, random, requests, logging, os, uuid
+"""ViSPAC Edge Layer - Patient Vital Signs Simulation and Compression.
+
+This module implements the edge tier of the ViSPAC (Vital Signs Processing
+and Compression) edge-fog-cloud architecture for healthcare IoT systems.
+
+The edge layer is responsible for:
+    - Simulating/collecting patient vital signs (HR, SpO2)
+    - Applying lossy compression (SDT - Swinging Door Trending)
+    - Applying lossless compression for network transmission (Huffman/LZW)
+    - Batching data by risk level for efficient transmission
+    - Adaptive sampling rate based on NEWS2 feedback from fog
+    - Backoff algorithm to reduce transmission during stable periods
+
+Key Algorithms:
+    1. Swinging Door Trending (SDT):
+       Lossy compression preserving trend information while reducing data points.
+       Configured per-risk level (higher risk = more frequent sampling).
+    
+    2. Adaptive Sampling (Algorithm 1):
+       Adjusts collection intervals based on patient risk level:
+       - HIGH: 30s HR, 30s SpO2
+       - MODERATE: 120s HR, 180s SpO2
+       - LOW: 300s HR, 600s SpO2
+       - MINIMAL: 600s HR, 900s SpO2
+    
+    3. Backoff Algorithm (Algorithm 3):
+       When signals are stable for K consecutive samples (K_STABLE=3),
+       doubles the collection interval up to a maximum (ic_max).
+       Reduces network traffic during stable monitoring periods.
+    
+    4. Risk-based Batching:
+       Groups samples by risk level with different timeouts and size limits:
+       - HIGH: 15s timeout, 5KB limit (urgent transmission)
+       - MODERATE: 60s timeout, 20KB limit
+       - LOW: 150s timeout, 50KB limit
+       - MINIMAL: 300s timeout, 50KB limit
+
+Quality Metrics:
+    PRD (Percent Root-mean-square Difference) is calculated for each
+    compressed signal to quantify signal fidelity after lossy compression.
+
+Communication:
+    Supports both HTTP POST and MQTT for sending batches to the fog layer.
+    The fog returns NEWS2 scores which trigger risk level updates.
+
+Environment Variables:
+    API_URL: Fog layer endpoint (default: http://127.0.0.1:8000/vispac/upload_batch)
+    EDGE_ID: Unique identifier for this edge device
+    DATASET_TYPE: 'low_risk' or 'high_risk'
+    PATIENT_RANGE: Selection of patients to simulate (e.g., '1-10', 'all')
+    EDGE_USE_MQTT: '1' to enable MQTT, '0' for HTTP only
+    MQTT_BROKER: MQTT broker address (default: 127.0.0.1)
+    MQTT_PORT: MQTT broker port (default: 1883)
+
+Author: Mateus Roveda
+Master's Dissertation - ViSPAC Project
+"""
+
+import time
+import json
+import random
+import requests
+import logging
+import os
+import uuid
 import pandas as pd
 import numpy as np
 from compressors import SwingingDoorCompressor, Huffman, LZW
@@ -170,9 +234,18 @@ def log_latency_summary():
             log.info(f"  {risk}: {len(latencies)} sends, avg {avg_risk:.1f}ms")
 
 def reconstruct_signal(original_signal_buf, compressed_signal):
-    """
-    Reconstructs a signal of the same size as the original using linear
-    interpolation from the compressed signal points.
+    """Reconstruct a signal from SDT-compressed points using linear interpolation.
+    
+    After SDT compression, only significant points are retained. This function
+    reconstructs the original signal length by interpolating between the
+    compressed points, allowing PRD calculation.
+    
+    Args:
+        original_signal_buf: List of (timestamp, value) tuples from original signal.
+        compressed_signal: List of (timestamp, value) tuples from SDT output.
+    
+    Returns:
+        numpy.ndarray: Interpolated values at original timestamps.
     """
     original_timestamps = [p[0] for p in original_signal_buf]
     compressed_timestamps = [p[0] for p in compressed_signal]
@@ -183,8 +256,27 @@ def reconstruct_signal(original_signal_buf, compressed_signal):
     return reconstructed_values
 
 def calculate_prd(original_signal, reconstructed_signal):
-    """
-    Calculates the Percent Root-mean-square Difference (PRD) using the standard formula.
+    """Calculate Percent Root-mean-square Difference (PRD) between signals.
+    
+    PRD is a standard metric for evaluating lossy compression quality in
+    biomedical signals. Lower values indicate better fidelity.
+    
+    Formula:
+        PRD = sqrt(sum((x_orig - x_recon)^2) / sum(x_orig^2)) * 100
+    
+    Interpretation:
+        - PRD < 1%: Excellent (suitable for diagnosis)
+        - PRD < 5%: Good (suitable for monitoring)
+        - PRD < 10%: Acceptable (suitable for trend analysis)
+        - PRD > 10%: Poor (may lose clinical significance)
+    
+    Args:
+        original_signal: List or array of original signal values.
+        reconstructed_signal: List or array of reconstructed signal values.
+    
+    Returns:
+        float: PRD percentage value.
+
     """
     original = np.array(original_signal)
     reconstructed = np.array(reconstructed_signal)
@@ -300,6 +392,31 @@ PARAMS={
 
 # --------------- Classes --------------------
 class Patient:
+    """Represents a patient being monitored in the simulation.
+    
+    Each Patient instance tracks vital signs from its assigned dataset,
+    manages collection intervals based on current risk level, and implements
+    the adaptive backoff algorithm for stable signals.
+    
+    Attributes:
+        id: Unique patient identifier.
+        df: DataFrame containing patient's vital signs data.
+        idx: Current position in the dataset.
+        news2: Latest NEWS2 score from fog layer.
+        risk: Current risk classification (HIGH/MODERATE/LOW/MINIMAL).
+        spo2_scale: SpO2 scoring scale (1=standard, 2=COPD).
+        on_o2: Whether patient is receiving supplemental oxygen.
+        base_consciousness: AVPU consciousness level.
+        ic_fc, ic_spo2: Collection intervals for HR and SpO2 (seconds).
+        eps_fc, eps_spo2: Tolerance for backoff detection.
+        dc_fc, dc_spo2: SDT deviation parameters.
+        t_sdt: SDT maximum time gap parameter.
+        persistent_high_risk: If True, patient never drops below HIGH risk.
+    
+    The patient's sampling parameters are automatically updated when
+    the fog layer returns new NEWS2 scores via update_risk().
+    """
+    
     def __init__(self, pid, df, news2=0, persistent_high_risk=False, force_high_risk=False,
                  spo2_scale=None, on_o2=None):
         self.id=pid; self.df=df; self.idx=random.randrange(len(df))
@@ -439,32 +556,123 @@ class Patient:
         return vitals
 
 class Assembler:
-    def __init__(self,cfg):
-        self.queues={r:{"buffer":[],"size":0,"timestamp":None,"config":conf} for r,conf in cfg.items()}
-    def add(self,pkg,risk):
-        q=self.queues[risk]
-        if not q['buffer']: q['timestamp']=time.time()
-        q['buffer'].append(pkg); q['size']+=pkg['post_sdt_size']
+    """Batches compressed data packets by risk level for transmission.
+    
+    The Assembler implements risk-based packet aggregation with configurable
+    thresholds for size and timeout. Higher-risk data is transmitted more
+    frequently with smaller batches to ensure timely delivery.
+    
+    Configuration per risk level:
+        - HIGH: 15s timeout, 5KB size limit
+        - MODERATE: 60s timeout, 20KB size limit  
+        - LOW: 150s timeout, 50KB size limit
+        - MINIMAL: 300s timeout, 50KB size limit
+    
+    Methods:
+        add(pkg, risk): Add a compressed packet to the appropriate queue.
+        get_ready_batches(): Return list of batches that should be sent
+            (either due to size limit or timeout reached).
+    
+    Attributes:
+        queues: Dict mapping risk levels to their queue state
+            (buffer, size, timestamp, config).
+    """
+    
+    def __init__(self, cfg):
+        """Initialize Assembler with configuration for each risk level.
+        
+        Args:
+            cfg: Dict mapping risk levels to {timeout, size_limit} dicts.
+        """
+        self.queues = {r: {"buffer": [], "size": 0, "timestamp": None, "config": conf} 
+                       for r, conf in cfg.items()}
+    
+    def add(self, pkg, risk):
+        """Add a data packet to the queue for the specified risk level.
+        
+        Args:
+            pkg: Dict containing compressed data and metadata.
+            risk: Risk level string (HIGH/MODERATE/LOW/MINIMAL).
+        """
+        q = self.queues[risk]
+        if not q['buffer']:
+            q['timestamp'] = time.time()
+        q['buffer'].append(pkg)
+        q['size'] += pkg['post_sdt_size']
         log.info(f"  [Pack] +{pkg['post_sdt_size']}b → queue {risk}={q['size']}b")
+    
     def get_ready_batches(self):
-        ready=[]
-        for r,q in self.queues.items():
-            if not q['buffer']: continue
-            if q['size']>=q['config']['size_limit'] or (q['timestamp'] and time.time()-q['timestamp']>=q['config']['timeout']):
-                reason="size" if q['size']>=q['config']['size_limit'] else "timeout"
-                ready.append({"batch":q['buffer'],"risk":r,"reason":reason})
-                q['buffer'],q['size'],q['timestamp']=[],0,None
+        """Check all queues and return batches that are ready to send.
+        
+        A batch is ready when either:
+            1. Size limit is exceeded, or
+            2. Timeout has been reached
+        
+        Returns:
+            List of dicts with keys: batch (list of packets), risk (str),
+            reason ('size' or 'timeout').
+        """
+        ready = []
+        for r, q in self.queues.items():
+            if not q['buffer']:
+                continue
+            if q['size'] >= q['config']['size_limit'] or \
+               (q['timestamp'] and time.time() - q['timestamp'] >= q['config']['timeout']):
+                reason = "size" if q['size'] >= q['config']['size_limit'] else "timeout"
+                ready.append({"batch": q['buffer'], "risk": r, "reason": reason})
+                q['buffer'], q['size'], q['timestamp'] = [], 0, None
         return ready
 
-# ------------- Lossless Compression -------------
 def lossless(txt: str, risk: str):
-    raw = txt.encode(); size=len(raw)
-    if risk == 'HIGH' or size < HUFF_MIN: return raw, 'none'
-    if size < LZW_MIN: return json.dumps(Huffman().compress(txt)).encode(), 'hushman'
+    """Apply lossless compression to payload based on size and risk.
+    
+    Compression strategy:
+        - HIGH risk: No compression (latency priority)
+        - Payload < 1KB: No compression (overhead not worth it)
+        - Payload < 32KB: Huffman coding
+        - Payload >= 32KB: LZW compression
+    
+    Args:
+        txt: JSON string payload to compress.
+        risk: Patient risk level.
+    
+    Returns:
+        Tuple of (compressed_bytes, compression_type_header).
+        Header is 'none', 'hushman' (Huffman), or 'lzw'.
+    
+    Note:
+        'hushman' is a legacy header name for Huffman compression,
+        maintained for backward compatibility with older fog versions.
+    """
+    raw = txt.encode()
+    size = len(raw)
+    if risk == 'HIGH' or size < HUFF_MIN:
+        return raw, 'none'
+    if size < LZW_MIN:
+        return json.dumps(Huffman().compress(txt)).encode(), 'hushman'
     return json.dumps(LZW().compress(txt)).encode(), 'lzw'
 
-# ----------- Batch Sending ----------------
 def send_batch(batch_info):
+    """Send a batch of compressed data to the fog layer.
+    
+    Supports both HTTP POST and MQTT protocols based on EDGE_USE_MQTT
+    environment variable. Applies lossless compression if appropriate
+    and tracks latency metrics.
+    
+    Args:
+        batch_info: Dict with keys:
+            - batch: List of compressed data packets
+            - risk: Risk level string
+            - reason: Why batch was triggered ('size' or 'timeout')
+    
+    Returns:
+        Dict mapping patient IDs to their new NEWS2 scores from fog response,
+        or empty dict if transmission failed.
+    
+    Side Effects:
+        - Updates LATENCY_METRICS global with transmission timing
+        - Logs transmission details and response
+    """
     batch=batch_info['batch']; risk=batch_info['risk']
     total_raw_size = sum(p.get('raw_size', 0) for p in batch)
     payload_str=json.dumps(batch)

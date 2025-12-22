@@ -1,3 +1,37 @@
+"""ViSPAC Fog Layer API - NEWS2 Scoring and Data Processing.
+
+This module implements the fog tier of the ViSPAC (Vital Signs Prioritized
+Adaptive Compression) edge-fog-cloud architecture for healthcare IoT systems.
+
+The fog layer is responsible for:
+    - Receiving compressed batches from edge devices
+    - Decompressing data (Huffman, LZW, or none)
+    - Calculating NEWS2 (National Early Warning Score 2) for each patient
+    - Forwarding data to the cloud layer organized by risk priority
+    - Providing real-time feedback to edge devices for adaptive sampling
+
+NEWS2 Algorithm:
+    The National Early Warning Score 2 (NEWS2) is a standardized tool developed
+    by the Royal College of Physicians (UK) for detecting patient deterioration.
+    It assigns scores to six physiological parameters:
+        - Respiratory rate (0-3 points)
+        - Oxygen saturation (0-3 points, with special scale for COPD)
+        - Supplemental oxygen (0-2 points)
+        - Temperature (0-3 points)
+        - Systolic blood pressure (0-3 points)
+        - Heart rate (0-3 points)
+        - Level of consciousness (0-3 points)
+    
+    Total score ranges from 0 to 20. Risk classification:
+        - 0: MINIMAL risk
+        - 1-4: LOW risk
+        - 5-6: MODERATE risk (or any single parameter = 3)
+        - 7+: HIGH risk (urgent clinical response required)
+
+Author: Mateus Roveda
+Master's Dissertation - ViSPAC Project
+"""
+
 from typing import Dict, Any, List, DefaultDict
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -100,48 +134,216 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ViSPAC Scoring & Decompression API v2", lifespan=lifespan)
 
 class Vitals(BaseModel):
-    rr: float = 18;   spo2: float = 98; spo2_scale: int = 1
-    on_o2: bool = False; temp: float = 36.5; sys_bp: float = 120
-    hr: float = 80; consciousness: str = "A"
+    """Pydantic model representing a patient's vital signs.
+    
+    This model holds all physiological parameters required for NEWS2 calculation.
+    Default values represent normal/healthy readings.
+    
+    Attributes:
+        rr: Respiratory rate in breaths per minute. Normal: 12-20.
+        spo2: Oxygen saturation percentage. Normal: 96-100%.
+        spo2_scale: SpO2 scoring scale. 1=standard, 2=COPD patients (Scale 2).
+        on_o2: Whether patient is receiving supplemental oxygen.
+        temp: Body temperature in Celsius. Normal: 36.1-38.0°C.
+        sys_bp: Systolic blood pressure in mmHg. Normal: 111-219.
+        hr: Heart rate in beats per minute. Normal: 51-90.
+        consciousness: AVPU scale level.
+            A=Alert (normal), V=responds to Voice, P=responds to Pain, U=Unresponsive.
+    """
+    
+    rr: float = 18
+    spo2: float = 98
+    spo2_scale: int = 1
+    on_o2: bool = False
+    temp: float = 36.5
+    sys_bp: float = 120
+    hr: float = 80
+    consciousness: str = "A"
 
-# --- scoring functions ------------------------------------------
+# --- NEWS2 Scoring Functions ------------------------------------------------
+# Each function implements the scoring criteria from the Royal College of
+# Physicians NEWS2 specification (2017). Scores range from 0 (normal) to 3 (critical).
+# ------------------------------------------------------------------------------
 
-def score_rr(rr): return 3 if rr<=8 else (1 if rr<=11 else (0 if rr<=20 else (2 if rr<=24 else 3)))
+def score_rr(rr: float) -> int:
+    """Calculate NEWS2 score for respiratory rate.
+    
+    Scoring thresholds (breaths per minute):
+        - ≤8:   Score 3 (Critical - bradypnea)
+        - 9-11: Score 1 (Mild concern)
+        - 12-20: Score 0 (Normal range)
+        - 21-24: Score 2 (Moderate concern - tachypnea)
+        - ≥25:  Score 3 (Critical - severe tachypnea)
+    
+    Args:
+        rr: Respiratory rate in breaths per minute.
+    
+    Returns:
+        int: NEWS2 score component (0-3).
+    """
+    return 3 if rr <= 8 else (1 if rr <= 11 else (0 if rr <= 20 else (2 if rr <= 24 else 3)))
 
-def score_spo2(spo2, scale, on_o2):
-    if scale==2:
-        if spo2<=83: return 3
-        if spo2<=85: return 2
-        if spo2<=87: return 1
-        if spo2<=92: return 0
+def score_spo2(spo2: float, scale: int, on_o2: bool) -> int:
+    """Calculate NEWS2 score for oxygen saturation (SpO2).
+    
+    NEWS2 provides two SpO2 scoring scales:
+        - Scale 1: Standard scale for most patients
+        - Scale 2: For patients with hypercapnic respiratory failure (e.g., COPD)
+          who have target SpO2 of 88-92%
+    
+    Scale 1 Thresholds:
+        - ≤91%: Score 3 (Critical hypoxemia)
+        - 92-93%: Score 2
+        - 94-95%: Score 1 (Mild hypoxemia)
+        - ≥96%: Score 0 (Normal)
+    
+    Scale 2 Thresholds (for COPD patients):
+        - ≤83%: Score 3 (Severe hypoxemia)
+        - 84-85%: Score 2
+        - 86-87%: Score 1
+        - 88-92%: Score 0 (Target range for COPD)
+        - >92% on O2: Score 1-3 (indicates possible over-oxygenation)
+        - >92% off O2: Score 0
+    
+    Args:
+        spo2: Oxygen saturation percentage (0-100).
+        scale: Scoring scale (1=standard, 2=COPD).
+        on_o2: Whether patient is receiving supplemental oxygen.
+    
+    Returns:
+        int: NEWS2 score component (0-3).
+    """
+    if scale == 2:
+        if spo2 <= 83: return 3
+        if spo2 <= 85: return 2
+        if spo2 <= 87: return 1
+        if spo2 <= 92: return 0
         # spo2 > 92 on scale 2
         if on_o2:
-            if spo2<=94: return 1
-            if spo2<=96: return 2
+            if spo2 <= 94: return 1
+            if spo2 <= 96: return 2
             return 3
         else:
             return 0  # SpO2 > 92 without O2 on scale 2 is normal
     else:
-        if spo2<=91: return 3
-        if spo2<=93: return 2
-        if spo2<=95: return 1
+        if spo2 <= 91: return 3
+        if spo2 <= 93: return 2
+        if spo2 <= 95: return 1
         return 0
 
-def score_o2(o): return 2 if o else 0
+def score_o2(on_o2: bool) -> int:
+    """Calculate NEWS2 score for supplemental oxygen use.
+    
+    Any patient receiving supplemental oxygen scores 2 points,
+    reflecting the clinical concern of oxygen dependency.
+    
+    Args:
+        on_o2: Whether patient is receiving supplemental oxygen.
+    
+    Returns:
+        int: NEWS2 score component (0 or 2).
+    """
+    return 2 if on_o2 else 0
 
-def score_temp(t): return 3 if t<=35 else (1 if t<=36 else (0 if t<=38 else (1 if t<=39 else 2)))
+def score_temp(temp: float) -> int:
+    """Calculate NEWS2 score for body temperature.
+    
+    Scoring thresholds (Celsius):
+        - ≤35.0°C: Score 3 (Critical - hypothermia)
+        - 35.1-36.0°C: Score 1 (Mild hypothermia)
+        - 36.1-38.0°C: Score 0 (Normal range)
+        - 38.1-39.0°C: Score 1 (Mild fever)
+        - ≥39.1°C: Score 2 (High fever)
+    
+    Args:
+        temp: Body temperature in degrees Celsius.
+    
+    Returns:
+        int: NEWS2 score component (0-3).
+    """
+    return 3 if temp <= 35 else (1 if temp <= 36 else (0 if temp <= 38 else (1 if temp <= 39 else 2)))
 
-def score_bp(bp): return 3 if bp<=90 else (2 if bp<=100 else (1 if bp<=110 else (0 if bp<=219 else 3)))
+def score_bp(sys_bp: float) -> int:
+    """Calculate NEWS2 score for systolic blood pressure.
+    
+    Scoring thresholds (mmHg):
+        - ≤90: Score 3 (Critical - severe hypotension)
+        - 91-100: Score 2 (Moderate hypotension)
+        - 101-110: Score 1 (Mild hypotension)
+        - 111-219: Score 0 (Normal range)
+        - ≥220: Score 3 (Critical - severe hypertension)
+    
+    Args:
+        sys_bp: Systolic blood pressure in mmHg.
+    
+    Returns:
+        int: NEWS2 score component (0-3).
+    """
+    return 3 if sys_bp <= 90 else (2 if sys_bp <= 100 else (1 if sys_bp <= 110 else (0 if sys_bp <= 219 else 3)))
 
-def score_hr(hr): return 3 if hr<=40 else (1 if hr<=50 else (0 if hr<=90 else (1 if hr<=110 else (2 if hr<=130 else 3))))
+def score_hr(hr: float) -> int:
+    """Calculate NEWS2 score for heart rate.
+    
+    Scoring thresholds (beats per minute):
+        - ≤40: Score 3 (Critical - severe bradycardia)
+        - 41-50: Score 1 (Mild bradycardia)
+        - 51-90: Score 0 (Normal range)
+        - 91-110: Score 1 (Mild tachycardia)
+        - 111-130: Score 2 (Moderate tachycardia)
+        - ≥131: Score 3 (Critical - severe tachycardia)
+    
+    Args:
+        hr: Heart rate in beats per minute.
+    
+    Returns:
+        int: NEWS2 score component (0-3).
+    """
+    return 3 if hr <= 40 else (1 if hr <= 50 else (0 if hr <= 90 else (1 if hr <= 110 else (2 if hr <= 130 else 3))))
 
-def score_consc(c): return 0 if c.upper()=="A" else 3
+def score_consc(consciousness: str) -> int:
+    """Calculate NEWS2 score for level of consciousness.
+    
+    Uses the AVPU scale:
+        - A (Alert): Score 0 - Patient is fully alert and oriented
+        - V (Voice): Score 3 - Patient responds to voice commands
+        - P (Pain): Score 3 - Patient responds only to painful stimuli
+        - U (Unresponsive): Score 3 - Patient is unresponsive
+    
+    Any deviation from 'Alert' scores 3 points, triggering immediate concern.
+    
+    Args:
+        consciousness: AVPU level as single character ('A', 'V', 'P', or 'U').
+    
+    Returns:
+        int: NEWS2 score component (0 or 3).
+    """
+    return 0 if consciousness.upper() == "A" else 3
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 def calculate(v: Vitals) -> int:
-    s = score_rr(v.rr)+score_spo2(v.spo2,v.spo2_scale,v.on_o2)+score_o2(v.on_o2)+score_temp(v.temp)+score_bp(v.sys_bp)+score_hr(v.hr)+score_consc(v.consciousness)
-    return 0 if v.spo2_scale==2 and s==score_spo2(v.spo2,v.spo2_scale,v.on_o2) else s
+    """Calculate the total NEWS2 score from all vital parameters.
+    
+    Sums scores from all seven physiological parameters. Special handling
+    for Scale 2 patients where the total might be just the SpO2 component.
+    
+    Risk Classification based on total score:
+        - 0: MINIMAL risk - routine monitoring
+        - 1-4: LOW risk - ward-based care
+        - 5-6: MODERATE risk - urgent response, increase monitoring frequency
+        - 7+: HIGH risk - emergency response, consider ICU
+        - Any single parameter = 3: MODERATE risk minimum (triggers clinical review)
+    
+    Args:
+        v: Vitals object containing all physiological parameters.
+    
+    Returns:
+        int: Total NEWS2 score (0-20 range).
+    """
+    s = (score_rr(v.rr) + score_spo2(v.spo2, v.spo2_scale, v.on_o2) + 
+         score_o2(v.on_o2) + score_temp(v.temp) + score_bp(v.sys_bp) + 
+         score_hr(v.hr) + score_consc(v.consciousness))
+    return 0 if v.spo2_scale == 2 and s == score_spo2(v.spo2, v.spo2_scale, v.on_o2) else s
 
 @app.post("/news2", summary="Calculate NEWS2 (partial or complete JSON)")
 def news2_route(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
@@ -162,6 +364,14 @@ def news2_route(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     return {"component_scores": scores, "total_score": total}
 
 def _risk_from_score(score: int) -> str:
+    """Convert NEWS2 score to risk classification string.
+    
+    Args:
+        score: Total NEWS2 score.
+    
+    Returns:
+        str: Risk level ('HIGH', 'MODERATE', 'LOW', or 'MINIMAL').
+    """
     return 'HIGH' if score >= 7 else ('MODERATE' if score >= 5 else ('LOW' if score >= 1 else 'MINIMAL'))
 
 def _forward_to_cloud(grouped: DefaultDict[str, List[Dict[str, Any]]]):
