@@ -26,7 +26,7 @@ echo "======================================"
 
 # Update system
 apt-get update
-apt-get install -y git python3 python3-pip python3-venv cgroup-tools
+apt-get install -y git python3 python3-pip python3-venv cgroup-tools netcat-openbsd
 
 # Create app user
 useradd -m -s /bin/bash vispac || true

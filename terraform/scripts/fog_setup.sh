@@ -21,7 +21,7 @@ echo "======================================"
 
 # Update system
 apt-get update
-apt-get install -y git python3 python3-pip python3-venv mosquitto mosquitto-clients
+apt-get install -y git python3 python3-pip python3-venv mosquitto mosquitto-clients netcat-openbsd
 
 # Configure Mosquitto MQTT Broker
 cat > /etc/mosquitto/conf.d/vispac.conf << 'EOF'
@@ -94,7 +94,7 @@ CLOUD_HOST=$(echo "$CLOUD_URL" | sed 's|http://||' | sed 's|:.*||')
 CLOUD_PORT=$(echo "$CLOUD_URL" | sed 's|.*:||')
 
 for i in {1..60}; do
-    if curl -s "$CLOUD_URL/health" > /dev/null 2>&1; then
+    if nc -z "$CLOUD_HOST" "$CLOUD_PORT" 2>/dev/null; then
         echo "Cloud service is ready!"
         break
     fi

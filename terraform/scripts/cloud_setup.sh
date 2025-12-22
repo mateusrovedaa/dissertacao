@@ -80,11 +80,7 @@ Requires=postgresql.service
 Type=simple
 User=vispac
 WorkingDirectory=/home/vispac/app
-Environment="DB_HOST=127.0.0.1"
-Environment="DB_PORT=5432"
-Environment="DB_NAME=vispac_db"
-Environment="DB_USER=vispac"
-Environment="DB_PASSWORD=$DB_PASSWORD"
+Environment="CLOUD_DB_URL=postgresql://vispac:$DB_PASSWORD@127.0.0.1:5432/vispac_db"
 ExecStart=/home/vispac/app/venv/bin/python cloud_api.py
 
 # Restart policy

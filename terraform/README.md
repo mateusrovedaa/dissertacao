@@ -113,9 +113,35 @@ tail -f /home/vispac/app/logs/edge_log.txt
 
 ## Destruir Infraestrutura
 
+### Usando o Script de Cleanup (Recomendado)
+
+```bash
+# Dry-run - ver o que será destruído (sem destruir nada)
+./cleanup.sh
+
+# Destruir com confirmação
+./cleanup.sh --execute
+
+# Destruir sem confirmação (CUIDADO!)
+./cleanup.sh --force
+```
+
+### Usando Terraform Diretamente
+
 ```bash
 terraform destroy
 ```
+
+### Recursos Removidos
+
+O cleanup irá remover:
+- 4x Instâncias EC2 Edge (t3.micro)
+- 1x Instância EC2 Fog (t3.small)
+- 1x Instância EC2 Cloud (t3.small) **incluindo dados do PostgreSQL**
+- VPC, Subnets, Internet Gateway
+- Security Groups
+- Route Tables
+- SSH Key Pair
 
 ## Troubleshooting
 
