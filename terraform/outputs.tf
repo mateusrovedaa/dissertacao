@@ -1,14 +1,26 @@
 # =============================================================================
-# Outputs for VISPAC Infrastructure
+# Outputs for VISPAC Infrastructure (Multi-Region)
 # =============================================================================
 
-output "vpc_id" {
-  description = "VPC ID"
-  value       = aws_vpc.vispac.id
+# VPC Outputs
+output "edge_fog_vpc_id" {
+  description = "Edge/Fog VPC ID (us-east-1)"
+  value       = aws_vpc.edge_fog.id
 }
 
+output "cloud_vpc_id" {
+  description = "Cloud VPC ID (us-west-1)"
+  value       = aws_vpc.cloud.id
+}
+
+output "vpc_peering_id" {
+  description = "VPC Peering Connection ID"
+  value       = aws_vpc_peering_connection.edge_fog_to_cloud.id
+}
+
+# Instance IPs
 output "cloud_public_ip" {
-  description = "Public IP of Cloud instance"
+  description = "Public IP of Cloud instance (us-west-1)"
   value       = aws_instance.cloud.public_ip
 }
 
@@ -18,7 +30,7 @@ output "cloud_private_ip" {
 }
 
 output "fog_public_ip" {
-  description = "Public IP of Fog instance"
+  description = "Public IP of Fog instance (us-east-1)"
   value       = aws_instance.fog.public_ip
 }
 
@@ -28,7 +40,7 @@ output "fog_private_ip" {
 }
 
 output "edge_public_ips" {
-  description = "Public IPs of Edge instances"
+  description = "Public IPs of Edge instances (us-east-1)"
   value       = aws_instance.edge[*].public_ip
 }
 
@@ -42,36 +54,46 @@ output "edge_patient_ranges" {
   value       = local.patient_ranges
 }
 
+# SSH Commands
 output "ssh_commands" {
   description = "SSH commands for each instance"
   value = {
     cloud = "ssh -i ~/.ssh/vispac ubuntu@${aws_instance.cloud.public_ip}"
     fog   = "ssh -i ~/.ssh/vispac ubuntu@${aws_instance.fog.public_ip}"
-    edges = [for i, ip in aws_instance.edge[*].public_ip : 
-             "ssh -i ~/.ssh/vispac ubuntu@${ip}  # edge-${format("%02d", i + 1)} (patients ${local.patient_ranges[i]})"]
+    edges = [for i, ip in aws_instance.edge[*].public_ip :
+    "ssh -i ~/.ssh/vispac ubuntu@${ip}  # edge-${format("%02d", i + 1)} (patients ${local.patient_ranges[i]})"]
   }
 }
 
+# Architecture Summary
 output "architecture_summary" {
-  description = "Architecture summary"
-  value = <<-EOT
+  description = "Multi-region architecture summary"
+  value       = <<-EOT
     
-    ╔══════════════════════════════════════════════════════════════════╗
-    ║                    VISPAC Architecture Deployed                   ║
-    ╠══════════════════════════════════════════════════════════════════╣
-    ║                                                                   ║
-    ║  Edge Instances (${var.edge_count}x ${var.edge_instance_type}):                              ║
-    ║    ${join("\n    ║    ", [for i in range(var.edge_count) : "edge-${format("%02d", i + 1)}: patients ${local.patient_ranges[i]}"])}
-    ║                                                                   ║
-    ║  Fog Instance (${var.fog_instance_type}):                                       ║
-    ║    MQTT Broker: ${aws_instance.fog.private_ip}:1883                     ║
-    ║    NEWS2 API:   ${aws_instance.fog.private_ip}:8000                     ║
-    ║                                                                   ║
-    ║  Cloud Instance (${var.cloud_instance_type}):                                     ║
-    ║    Cloud API:   ${aws_instance.cloud.private_ip}:9000                   ║
-    ║    PostgreSQL:  ${aws_instance.cloud.private_ip}:5432                   ║
-    ║                                                                   ║
-    ╚══════════════════════════════════════════════════════════════════╝
+    ╔═══════════════════════════════════════════════════════════════════════╗
+    ║               VISPAC Multi-Region Architecture Deployed               ║
+    ╠═══════════════════════════════════════════════════════════════════════╣
+    ║                                                                       ║
+    ║  REGION: ${var.aws_region} (Edge/Fog)                                          ║
+    ║  ┌─────────────────────────────────────────────────────────────────┐  ║
+    ║  │ Edge Subnet (${var.edge_subnet_cidr}):                                 │  ║
+    ║  │   ${join("\n    ║  │   ", [for i in range(var.edge_count) : "edge-${format("%02d", i + 1)}: patients ${local.patient_ranges[i]}"])}
+    ║  │                                                                 │  ║
+    ║  │ Fog Subnet (${var.fog_subnet_cidr}):                                  │  ║
+    ║  │   MQTT Broker: ${aws_instance.fog.private_ip}:1883                    │  ║
+    ║  │   NEWS2 API:   ${aws_instance.fog.private_ip}:8000                    │  ║
+    ║  └─────────────────────────────────────────────────────────────────┘  ║
+    ║                              │                                        ║
+    ║                         VPC PEERING                                   ║
+    ║                              │                                        ║
+    ║  REGION: ${var.cloud_region} (Cloud)                                          ║
+    ║  ┌─────────────────────────────────────────────────────────────────┐  ║
+    ║  │ Cloud Subnet (${var.cloud_subnet_cidr}):                               │  ║
+    ║  │   Cloud API:   ${aws_instance.cloud.private_ip}:9000                  │  ║
+    ║  │   PostgreSQL:  ${aws_instance.cloud.private_ip}:5432                  │  ║
+    ║  └─────────────────────────────────────────────────────────────────┘  ║
+    ║                                                                       ║
+    ╚═══════════════════════════════════════════════════════════════════════╝
     
   EOT
 }

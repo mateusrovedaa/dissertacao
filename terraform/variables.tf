@@ -7,9 +7,15 @@
 # -----------------------------------------------------------------------------
 
 variable "aws_region" {
-  description = "AWS region for resources"
+  description = "AWS region for Edge and Fog resources"
   type        = string
   default     = "us-east-1"
+}
+
+variable "cloud_region" {
+  description = "AWS region for Cloud resources (separate from Edge/Fog)"
+  type        = string
+  default     = "us-west-1"
 }
 
 variable "project_name" {
@@ -29,21 +35,33 @@ variable "environment" {
 # -----------------------------------------------------------------------------
 
 variable "vpc_cidr" {
-  description = "CIDR block for VPC"
+  description = "CIDR block for Edge/Fog VPC (us-east-1)"
   type        = string
   default     = "10.0.0.0/16"
 }
 
-variable "private_subnet_cidr" {
-  description = "CIDR block for private subnet (Edge + Fog)"
+variable "edge_subnet_cidr" {
+  description = "CIDR block for Edge subnet"
   type        = string
   default     = "10.0.1.0/24"
 }
 
-variable "public_subnet_cidr" {
-  description = "CIDR block for public subnet (Cloud)"
+variable "fog_subnet_cidr" {
+  description = "CIDR block for Fog subnet (separate from Edge)"
   type        = string
-  default     = "10.0.2.0/24"
+  default     = "10.0.3.0/24"
+}
+
+variable "cloud_vpc_cidr" {
+  description = "CIDR block for Cloud VPC (us-west-1)"
+  type        = string
+  default     = "10.1.0.0/16"
+}
+
+variable "cloud_subnet_cidr" {
+  description = "CIDR block for Cloud subnet"
+  type        = string
+  default     = "10.1.1.0/24"
 }
 
 variable "allowed_ssh_cidrs" {
