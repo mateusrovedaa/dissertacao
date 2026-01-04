@@ -151,6 +151,17 @@ variable "total_patients" {
   default     = 53 # BIDMC dataset has 53 patients
 }
 
+variable "scenario" {
+  description = "Test scenario: scenario1_baseline (raw), scenario2_static (compression only), scenario3_vispac (full)"
+  type        = string
+  default     = "scenario3_vispac"
+
+  validation {
+    condition     = contains(["scenario1_baseline", "scenario2_static", "scenario3_vispac"], var.scenario)
+    error_message = "Scenario must be one of: scenario1_baseline, scenario2_static, scenario3_vispac"
+  }
+}
+
 variable "db_password" {
   description = "PostgreSQL password for cloud database"
   type        = string

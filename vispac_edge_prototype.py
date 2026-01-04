@@ -146,6 +146,44 @@ PATIENT_RANGE = os.environ.get("PATIENT_RANGE", "all")
 
 # Number of patients to simulate (0 = all available) - DEPRECATED, use PATIENT_RANGE
 NUM_PATIENTS = int(os.environ.get("NUM_PATIENTS", "0"))
+
+# =============================================================================
+# SCENARIO CONFIGURATION
+# =============================================================================
+# scenario1_baseline: No compression, fixed 1s collection interval (raw data collection)
+# scenario2_static:   Compression enabled, fixed intervals per risk level (no adaptation)
+# scenario3_vispac:   Full ViSPAC with compression and dynamic adaptation based on NEWS2
+# =============================================================================
+SCENARIO = os.environ.get("SCENARIO", "scenario3_vispac")
+
+SCENARIO_CONFIG = {
+    "scenario1_baseline": {
+        "compression_enabled": False,
+        "dynamic_adaptation": False,
+        "fixed_collection_interval": 1,  # 1 second - high frequency raw collection
+        "description": "Baseline - Raw data collection without compression"
+    },
+    "scenario2_static": {
+        "compression_enabled": True,
+        "dynamic_adaptation": False,
+        "fixed_collection_interval": None,  # Uses risk-based intervals but no backoff
+        "description": "Static compression without dynamic adaptation"
+    },
+    "scenario3_vispac": {
+        "compression_enabled": True,
+        "dynamic_adaptation": True,
+        "fixed_collection_interval": None,  # Full dynamic behavior
+        "description": "Full ViSPAC with compression and dynamic adaptation"
+    }
+}
+
+# Validate scenario
+if SCENARIO not in SCENARIO_CONFIG:
+    log.warning(f"Invalid SCENARIO '{SCENARIO}', defaulting to scenario3_vispac")
+    SCENARIO = "scenario3_vispac"
+
+log.info(f"Running scenario: {SCENARIO} - {SCENARIO_CONFIG[SCENARIO]['description']}")
+
 K_STABLE = 3
 KEEP_ALIVE = 600
 HUFF_MIN, LZW_MIN = 1 * 1024, 32 * 1024
@@ -482,6 +520,16 @@ class Patient:
         return {"timestamp":time.time(),"hr":float(hr_val),"spo2":float(spo2_val)}
 
     def update_risk(self,score):
+        # In non-adaptive scenarios, don't change intervals based on NEWS2
+        if not SCENARIO_CONFIG[SCENARIO]["dynamic_adaptation"]:
+            # Still track the score for logging, but don't update intervals
+            old=getattr(self,'risk','N/A')
+            self.news2=score
+            self.risk=('HIGH' if score>=7 else 'MODERATE' if score>=5 else 'LOW' if score>=1 else 'MINIMAL')
+            if self.risk!=old:
+                log.info(f"[RISK] {self.id}: {old} → {self.risk} (NEWS2={score}) [STATIC - intervals unchanged]")
+            return
+        
         # Persistent HIGH risk patients never drop below NEWS2=7
         if self.persistent_high_risk and score<7: 
             score=7
@@ -500,6 +548,9 @@ class Patient:
         self.t_sdt,self.ic_max=p['t_sdt'],p['ic_max']
 
     def backoff(self,sig,latest):
+        # Disable backoff in non-adaptive scenarios
+        if not SCENARIO_CONFIG[SCENARIO]["dynamic_adaptation"]:
+            return
         if self.risk=='HIGH':return
         eps=self.eps_fc if sig=='hr' else self.eps_spo2
         st_attr='stable_fc' if sig=='hr' else 'stable_spo2'
@@ -798,6 +849,9 @@ def main():
     log.info("="*60)
     log.info(f"VISPAC SIMULATION STARTED")
     log.info(f"  Edge ID: {EDGE_ID}")
+    log.info(f"  Scenario: {SCENARIO}")
+    log.info(f"    Compression: {'ENABLED' if SCENARIO_CONFIG[SCENARIO]['compression_enabled'] else 'DISABLED'}")
+    log.info(f"    Adaptation: {'DYNAMIC' if SCENARIO_CONFIG[SCENARIO]['dynamic_adaptation'] else 'STATIC'}")
     log.info(f"  Dataset: {DATASET_TYPE.upper()}")
     log.info(f"  Patients: {len(patient_ids)} ({patient_ids[0]} to {patient_ids[-1]})")
     log.info("="*60)
@@ -850,38 +904,69 @@ def main():
             for p in patients:
                 v=p.next(); p.fc_buf.append((v['timestamp'],v['hr'])); p.spo2_buf.append((v['timestamp'],v['spo2']))
                 
-                if now-p.last_fc_col>=p.ic_fc:
+                # Determine collection interval based on scenario
+                scenario_cfg = SCENARIO_CONFIG[SCENARIO]
+                hr_interval = scenario_cfg["fixed_collection_interval"] if scenario_cfg["fixed_collection_interval"] else p.ic_fc
+                
+                if now-p.last_fc_col>=hr_interval:
                     raw_size=len(json.dumps(p.fc_buf).encode())
-                    comp=sdt.compress(p.fc_buf,p.dc_fc,p.t_sdt)
+                    
+                    # Apply compression based on scenario
+                    if scenario_cfg["compression_enabled"]:
+                        comp=sdt.compress(p.fc_buf,p.dc_fc,p.t_sdt)
+                    else:
+                        # No compression - send raw data
+                        comp = p.fc_buf if p.fc_buf else None
+                    
                     if comp:
                         post_sdt_size=len(json.dumps(comp).encode())
                         reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
-                        log.info(f"[HR COLLECT] {p.id} {p.risk} | {len(p.fc_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
                         
-                        original_signal_values = [point[1] for point in p.fc_buf]
-                        reconstructed_signal = reconstruct_signal(p.fc_buf, comp)
-                        prd_value = calculate_prd(original_signal_values, reconstructed_signal)
-                        prd_accumulator['hr'].append(prd_value)
-                        log.info(f"  [HR DISTORTION] {p.id} PRD={prd_value:.4f}%")
+                        if scenario_cfg["compression_enabled"]:
+                            log.info(f"[HR COLLECT] {p.id} {p.risk} | {len(p.fc_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
+                            
+                            original_signal_values = [point[1] for point in p.fc_buf]
+                            reconstructed_signal = reconstruct_signal(p.fc_buf, comp)
+                            prd_value = calculate_prd(original_signal_values, reconstructed_signal)
+                            prd_accumulator['hr'].append(prd_value)
+                            log.info(f"  [HR DISTORTION] {p.id} PRD={prd_value:.4f}%")
+                        else:
+                            log.info(f"[HR COLLECT] {p.id} {p.risk} | {len(p.fc_buf)} pts | {raw_size}b (RAW - no compression)")
+                            prd_accumulator['hr'].append(0.0)  # No distortion for raw data
 
                         vitals=p.get_current_vitals()
                         entry={'patient_id':p.id,'signal':'hr','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size, 'vitals':vitals}
                         assembler.add(entry,p.risk)
                     p.fc_buf=[]; p.last_fc_col=now; p.backoff('hr',v['hr'])
                 
-                if now-p.last_spo2_col>=p.ic_spo2:
+                # SpO2 collection - same scenario logic
+                spo2_interval = scenario_cfg["fixed_collection_interval"] if scenario_cfg["fixed_collection_interval"] else p.ic_spo2
+                
+                if now-p.last_spo2_col>=spo2_interval:
                     raw_size=len(json.dumps(p.spo2_buf).encode())
-                    comp=sdt.compress(p.spo2_buf,p.dc_spo2,p.t_sdt)
+                    
+                    # Apply compression based on scenario
+                    if scenario_cfg["compression_enabled"]:
+                        comp=sdt.compress(p.spo2_buf,p.dc_spo2,p.t_sdt)
+                    else:
+                        # No compression - send raw data
+                        comp = p.spo2_buf if p.spo2_buf else None
+                    
                     if comp:
                         post_sdt_size=len(json.dumps(comp).encode())
                         reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
-                        log.info(f"[SpO2 COLLECT] {p.id} {p.risk} | {len(p.spo2_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
                         
-                        original_signal_values = [point[1] for point in p.spo2_buf]
-                        reconstructed_signal = reconstruct_signal(p.spo2_buf, comp)
-                        prd_value = calculate_prd(original_signal_values, reconstructed_signal)
-                        prd_accumulator['spo2'].append(prd_value)
-                        log.info(f"  [SpO2 DISTORTION] {p.id} PRD={prd_value:.4f}%")
+                        if scenario_cfg["compression_enabled"]:
+                            log.info(f"[SpO2 COLLECT] {p.id} {p.risk} | {len(p.spo2_buf)}→{len(comp)} pts | {raw_size}b→{post_sdt_size}b ({reduction:.1f}%)")
+                            
+                            original_signal_values = [point[1] for point in p.spo2_buf]
+                            reconstructed_signal = reconstruct_signal(p.spo2_buf, comp)
+                            prd_value = calculate_prd(original_signal_values, reconstructed_signal)
+                            prd_accumulator['spo2'].append(prd_value)
+                            log.info(f"  [SpO2 DISTORTION] {p.id} PRD={prd_value:.4f}%")
+                        else:
+                            log.info(f"[SpO2 COLLECT] {p.id} {p.risk} | {len(p.spo2_buf)} pts | {raw_size}b (RAW - no compression)")
+                            prd_accumulator['spo2'].append(0.0)  # No distortion for raw data
 
                         vitals=p.get_current_vitals()
                         entry={'patient_id':p.id,'signal':'spo2','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size, 'vitals':vitals}

@@ -32,5 +32,12 @@ git_branch     = "main"
 dataset_type   = "high_risk"
 total_patients = 53  # BIDMC has 53 patients
 
+# Test scenario configuration
+# Options: scenario1_baseline, scenario2_static, scenario3_vispac
+# - scenario1_baseline: No compression, fixed 1s collection (raw data)
+# - scenario2_static:   Compression enabled, fixed intervals (no adaptation)
+# - scenario3_vispac:   Full ViSPAC with compression and dynamic adaptation
+scenario = "scenario3_vispac"
+
 # Database password (change this!)
 db_password = "your-secure-password-here"

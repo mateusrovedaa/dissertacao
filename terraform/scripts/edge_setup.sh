@@ -15,6 +15,7 @@ GIT_REPO="${git_repo}"
 GIT_BRANCH="${git_branch}"
 MEMORY_LIMIT_MB="${memory_limit}"
 CPU_LIMIT_PERCENT="${cpu_limit}"
+SCENARIO="${scenario}"
 
 LOG_FILE="/var/log/vispac-edge-setup.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -114,6 +115,7 @@ Environment="DATASET_TYPE=$DATASET_TYPE"
 Environment="MQTT_BROKER=$MQTT_BROKER"
 Environment="MQTT_PORT=1883"
 Environment="EDGE_USE_MQTT=1"
+Environment="SCENARIO=$SCENARIO"
 ExecStart=/home/vispac/app/venv/bin/python vispac_edge_prototype.py
 
 # Resource Limits (alternative to cgroups, systemd native)

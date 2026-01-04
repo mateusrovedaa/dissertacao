@@ -420,14 +420,15 @@ resource "aws_instance" "edge" {
   }
 
   user_data = templatefile("${path.module}/scripts/edge_setup.sh", {
-    edge_id      = "edge-${format("%02d", count.index + 1)}"
+    edge_id       = "edge-${format("%02d", count.index + 1)}"
     patient_range = local.patient_ranges[count.index]
-    mqtt_broker  = aws_instance.fog.private_ip
-    dataset_type = var.dataset_type
-    git_repo     = var.git_repo_url
-    git_branch   = var.git_branch
-    memory_limit = var.edge_memory_limit_mb
-    cpu_limit    = var.edge_cpu_limit_percent
+    mqtt_broker   = aws_instance.fog.private_ip
+    dataset_type  = var.dataset_type
+    git_repo      = var.git_repo_url
+    git_branch    = var.git_branch
+    memory_limit  = var.edge_memory_limit_mb
+    cpu_limit     = var.edge_cpu_limit_percent
+    scenario      = var.scenario
   })
 
   tags = {
