@@ -43,14 +43,12 @@ formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 file_handler.setFormatter(formatter)
 stream_handler.setFormatter(formatter)
 
-logging.basicConfig(level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+logging.basicConfig(
+    level=logging.INFO,
     handlers=[file_handler, stream_handler],
-    force=True)
+    force=True
+)
 log = logging.getLogger("vispac-cloud")
-log.setLevel(logging.INFO)
-log.addHandler(file_handler)
-log.addHandler(stream_handler)
 
 DB_PATH = os.environ.get("CLOUD_DB_PATH", "cloud_data.sqlite3")
 DB_URL = os.environ.get("CLOUD_DB_URL", "")
