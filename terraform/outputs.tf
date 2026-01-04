@@ -69,31 +69,43 @@ output "ssh_commands" {
 output "architecture_summary" {
   description = "Multi-region architecture summary"
   value       = <<-EOT
-    
-    ╔═══════════════════════════════════════════════════════════════════════╗
-    ║               VISPAC Multi-Region Architecture Deployed               ║
-    ╠═══════════════════════════════════════════════════════════════════════╣
-    ║                                                                       ║
-    ║  REGION: ${var.aws_region} (Edge/Fog)                                          ║
-    ║  ┌─────────────────────────────────────────────────────────────────┐  ║
-    ║  │ Edge Subnet (${var.edge_subnet_cidr}):                                 │  ║
-    ║  │   ${join("\n    ║  │   ", [for i in range(var.edge_count) : "edge-${format("%02d", i + 1)}: patients ${local.patient_ranges[i]}"])}
-    ║  │                                                                 │  ║
-    ║  │ Fog Subnet (${var.fog_subnet_cidr}):                                  │  ║
-    ║  │   MQTT Broker: ${aws_instance.fog.private_ip}:1883                    │  ║
-    ║  │   NEWS2 API:   ${aws_instance.fog.private_ip}:8000                    │  ║
-    ║  └─────────────────────────────────────────────────────────────────┘  ║
-    ║                              │                                        ║
-    ║                         VPC PEERING                                   ║
-    ║                              │                                        ║
-    ║  REGION: ${var.cloud_region} (Cloud)                                          ║
-    ║  ┌─────────────────────────────────────────────────────────────────┐  ║
-    ║  │ Cloud Subnet (${var.cloud_subnet_cidr}):                               │  ║
-    ║  │   Cloud API:   ${aws_instance.cloud.private_ip}:9000                  │  ║
-    ║  │   PostgreSQL:  ${aws_instance.cloud.private_ip}:5432                  │  ║
-    ║  └─────────────────────────────────────────────────────────────────┘  ║
-    ║                                                                       ║
-    ╚═══════════════════════════════════════════════════════════════════════╝
-    
+
+    ========================================
+    VISPAC Multi-Region Architecture
+    ========================================
+
+    REGION: ${var.aws_region} (Edge + Fog)
+    ----------------------------------------
+    | Layer | Subnet        | IP              |
+    |-------|---------------|-----------------|
+    | Edge  | ${var.edge_subnet_cidr} | ${join(", ", aws_instance.edge[*].private_ip)} |
+    | Fog   | ${var.fog_subnet_cidr} | ${aws_instance.fog.private_ip}     |
+
+    Edge Instances:
+    %{for i in range(var.edge_count)~}
+      - edge-${format("%02d", i + 1)}: patients ${local.patient_ranges[i]} (${aws_instance.edge[i].private_ip})
+    %{endfor~}
+
+    Fog Services:
+      - MQTT Broker: ${aws_instance.fog.private_ip}:1883
+      - NEWS2 API:   ${aws_instance.fog.private_ip}:8000
+
+                    |
+               VPC PEERING
+                    |
+                    v
+
+    REGION: ${var.cloud_region} (Cloud)
+    ----------------------------------------
+    | Layer | Subnet        | IP              |
+    |-------|---------------|-----------------|
+    | Cloud | ${var.cloud_subnet_cidr} | ${aws_instance.cloud.private_ip}    |
+
+    Cloud Services:
+      - Cloud API:  ${aws_instance.cloud.private_ip}:9000
+      - PostgreSQL: ${aws_instance.cloud.private_ip}:5432
+
+    ========================================
+
   EOT
 }

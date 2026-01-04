@@ -78,7 +78,7 @@ if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
     CPU_QUOTA=$((CPU_LIMIT_PERCENT * 1000))
     echo "$CPU_QUOTA 100000" > "$CGROUP_PATH/cpu.max"
     
-    echo "Resource limits set: Memory=${MEMORY_LIMIT_MB}MB, CPU=${CPU_LIMIT_PERCENT}%"
+    echo "Resource limits set: Memory=$${MEMORY_LIMIT_MB}MB, CPU=$${CPU_LIMIT_PERCENT}%"
 else
     echo "Using cgroups v1"
     
@@ -117,9 +117,9 @@ Environment="EDGE_USE_MQTT=1"
 ExecStart=/home/vispac/app/venv/bin/python vispac_edge_prototype.py
 
 # Resource Limits (alternative to cgroups, systemd native)
-MemoryMax=${MEMORY_LIMIT_MB}M
+MemoryMax=$${MEMORY_LIMIT_MB}M
 MemoryHigh=$((MEMORY_LIMIT_MB * 90 / 100))M
-CPUQuota=${CPU_LIMIT_PERCENT}%
+CPUQuota=$${CPU_LIMIT_PERCENT}%
 
 # Restart policy
 Restart=always
@@ -159,6 +159,6 @@ echo "Edge setup complete!"
 echo "Edge ID: $EDGE_ID"
 echo "Patient Range: $PATIENT_RANGE"
 echo "MQTT Broker: $MQTT_BROKER:1883"
-echo "Memory Limit: ${MEMORY_LIMIT_MB}MB"
-echo "CPU Limit: ${CPU_LIMIT_PERCENT}%"
+echo "Memory Limit: $${MEMORY_LIMIT_MB}MB"
+echo "CPU Limit: $${CPU_LIMIT_PERCENT}%"
 echo "======================================"

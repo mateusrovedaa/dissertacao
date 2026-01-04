@@ -1,0 +1,159 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "EC2DescribeAll",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:DescribeInstances",
+                "ec2:DescribeInstanceStatus",
+                "ec2:DescribeInstanceTypes",
+                "ec2:DescribeInstanceAttribute",
+                "ec2:DescribeImages",
+                "ec2:DescribeKeyPairs",
+                "ec2:DescribeVpcs",
+                "ec2:DescribeVpcAttribute",
+                "ec2:DescribeSubnets",
+                "ec2:DescribeInternetGateways",
+                "ec2:DescribeRouteTables",
+                "ec2:DescribeSecurityGroups",
+                "ec2:DescribeSecurityGroupRules",
+                "ec2:DescribeNetworkInterfaces",
+                "ec2:DescribeVolumes",
+                "ec2:DescribeVolumeStatus",
+                "ec2:DescribeTags",
+                "ec2:DescribeAvailabilityZones",
+                "ec2:DescribeRegions",
+                "ec2:DescribeAddresses",
+                "ec2:DescribeAccountAttributes"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "EC2CreateWithTags",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:RunInstances"
+            ],
+            "Resource": [
+                "arn:aws:ec2:*:*:instance/*",
+                "arn:aws:ec2:*:*:volume/*",
+                "arn:aws:ec2:*:*:network-interface/*"
+            ],
+            "Condition": {
+                "StringEquals": {
+                    "aws:RequestTag/Project": "vispac"
+                }
+            }
+        },
+        {
+            "Sid": "EC2RunInstancesResources",
+            "Effect": "Allow",
+            "Action": "ec2:RunInstances",
+            "Resource": [
+                "arn:aws:ec2:*:*:subnet/*",
+                "arn:aws:ec2:*:*:security-group/*",
+                "arn:aws:ec2:*:*:key-pair/*",
+                "arn:aws:ec2:*::image/*"
+            ]
+        },
+        {
+            "Sid": "EC2ManageTaggedInstances",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:TerminateInstances",
+                "ec2:StartInstances",
+                "ec2:StopInstances",
+                "ec2:RebootInstances",
+                "ec2:ModifyInstanceAttribute"
+            ],
+            "Resource": "arn:aws:ec2:*:*:instance/*",
+            "Condition": {
+                "StringEquals": {
+                    "ec2:ResourceTag/Project": "vispac"
+                }
+            }
+        },
+        {
+            "Sid": "EC2KeyPairs",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:CreateKeyPair",
+                "ec2:DeleteKeyPair",
+                "ec2:ImportKeyPair"
+            ],
+            "Resource": "arn:aws:ec2:*:*:key-pair/vispac-*"
+        },
+        {
+            "Sid": "EC2VPCCreate",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:CreateVpc",
+                "ec2:CreateSubnet",
+                "ec2:CreateInternetGateway",
+                "ec2:CreateRouteTable",
+                "ec2:CreateSecurityGroup",
+                "ec2:CreateRoute",
+                "ec2:CreateTags"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "aws:RequestTag/Project": "vispac"
+                }
+            }
+        },
+        {
+            "Sid": "EC2VPCCreateNoCondition",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:CreateTags"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "EC2VPCManageTagged",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:DeleteVpc",
+                "ec2:ModifyVpcAttribute",
+                "ec2:DeleteSubnet",
+                "ec2:ModifySubnetAttribute",
+                "ec2:DeleteInternetGateway",
+                "ec2:AttachInternetGateway",
+                "ec2:DetachInternetGateway",
+                "ec2:DeleteRouteTable",
+                "ec2:DeleteRoute",
+                "ec2:AssociateRouteTable",
+                "ec2:DisassociateRouteTable",
+                "ec2:DeleteSecurityGroup",
+                "ec2:AuthorizeSecurityGroupIngress",
+                "ec2:AuthorizeSecurityGroupEgress",
+                "ec2:RevokeSecurityGroupIngress",
+                "ec2:RevokeSecurityGroupEgress"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "ec2:ResourceTag/Project": "vispac"
+                }
+            }
+        },
+        {
+            "Sid": "EC2Volumes",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:CreateVolume",
+                "ec2:DeleteVolume",
+                "ec2:AttachVolume",
+                "ec2:DetachVolume"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "aws:RequestTag/Project": "vispac"
+                }
+            }
+        }
+    ]
+}
