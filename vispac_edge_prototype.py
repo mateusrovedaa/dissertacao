@@ -131,21 +131,22 @@ API_URL = os.environ.get("API_URL", "http://127.0.0.1:8000/vispac/upload_batch")
 # Edge Identification
 EDGE_ID = os.environ.get("EDGE_ID", f"edge-{uuid.uuid4().hex[:8]}")
 
-# Dataset Configuration
-DATASET_TYPE = os.environ.get("DATASET_TYPE", "low_risk")  # low_risk or high_risk
+# Dataset Configuration - flexible per-edge patient selection
 DATASET_PATHS = {
     "low_risk": "datasets/low_risk/low_risk_processed.csv",
     "high_risk": "datasets/high_risk/high_risk_processed.csv",
-    "default": "dataset.csv"  # Legacy dataset for compatibility
 }
-DATASET_PATH = DATASET_PATHS.get(DATASET_TYPE, DATASET_PATHS["default"])
 
-# Patient Range: "1-10" means patients 1 to 10, "5,10,15" means specific patients
-# Empty or "all" means all available patients
-PATIENT_RANGE = os.environ.get("PATIENT_RANGE", "all")
+# Number of patients from each dataset
+# Set via environment variables for Terraform, Docker, or local execution:
+#   HIGH_PATIENTS=3 LOW_PATIENTS=5 python vispac_edge_prototype.py
+# Defaults: 2 high + 3 low for local testing (set to 0 to disable a dataset)
+HIGH_PATIENTS = int(os.environ.get("HIGH_PATIENTS", "2"))
+LOW_PATIENTS = int(os.environ.get("LOW_PATIENTS", "3"))
 
-# Number of patients to simulate (0 = all available) - DEPRECATED, use PATIENT_RANGE
-NUM_PATIENTS = int(os.environ.get("NUM_PATIENTS", "0"))
+# Validate that at least one patient is configured
+if HIGH_PATIENTS == 0 and LOW_PATIENTS == 0:
+    raise ValueError("At least one patient must be configured (HIGH_PATIENTS or LOW_PATIENTS > 0)")
 
 # =============================================================================
 # SCENARIO CONFIGURATION
@@ -336,28 +337,67 @@ SAMPLE_DATA=[(80,98),(81,98),(80,99),(82,98),(83,98),(82,97),(85,98),(84,98),(86
     (118,91),(120,92),(115,93),(110,94),(105,95),(100,96),(95,97),(92,98),(90,98),
     (88,99),(86,98),(85,98)]
 
-def ensure_dataset():
+def load_datasets():
     """
-    Loads the dataset based on DATASET_TYPE configuration.
-    Raises an error if the dataset doesn't exist.
+    Load datasets based on HIGH_PATIENTS and LOW_PATIENTS configuration.
+    Returns a dict with loaded DataFrames and selected patient IDs.
     """
-    if not os.path.exists(DATASET_PATH):
-        log.error(f"❌ Dataset not found: {DATASET_PATH}")
-        log.error(f"")
-        log.error(f"To download the datasets, run:")
-        log.error(f"  - Low risk: Download from Kaggle and process")
-        log.error(f"  - High risk: python download_bidmc_data.py")
-        log.error(f"")
-        raise FileNotFoundError(f"Dataset not found: {DATASET_PATH}")
+    datasets = {}
+    selected_patients = []
     
-    df = pd.read_csv(DATASET_PATH)
-    log.info(f"Dataset loaded: {DATASET_PATH}")
-    log.info(f"  Type: {DATASET_TYPE}")
-    log.info(f"  Samples: {len(df)}")
-    log.info(f"  Average HR: {df['hr'].mean():.1f} ± {df['hr'].std():.1f}")
-    log.info(f"  Average SpO2: {df['spo2'].mean():.1f} ± {df['spo2'].std():.1f}")
+    # Load high_risk dataset if needed
+    if HIGH_PATIENTS > 0:
+        high_path = DATASET_PATHS["high_risk"]
+        if not os.path.exists(high_path):
+            log.error(f"❌ High-risk dataset not found: {high_path}")
+            log.error("Run: python download_bidmc_data.py")
+            raise FileNotFoundError(f"Dataset not found: {high_path}")
+        
+        high_df = pd.read_csv(high_path)
+        datasets["high_risk"] = high_df
+        
+        # Get available patient IDs and randomly select
+        if 'patient_id' in high_df.columns:
+            available_ids = list(high_df['patient_id'].unique())
+            if len(available_ids) < HIGH_PATIENTS:
+                log.warning(f"Requested {HIGH_PATIENTS} high-risk patients but only {len(available_ids)} available")
+                selected_high = available_ids
+            else:
+                selected_high = random.sample(available_ids, HIGH_PATIENTS)
+            
+            for pid in selected_high:
+                selected_patients.append({"id": str(pid), "dataset": "high_risk", "df": high_df})
+            
+            log.info(f"High-risk dataset loaded: {high_path}")
+            log.info(f"  Selected {len(selected_high)} patients: {selected_high}")
     
-    return df
+    # Load low_risk dataset if needed
+    if LOW_PATIENTS > 0:
+        low_path = DATASET_PATHS["low_risk"]
+        if not os.path.exists(low_path):
+            log.error(f"❌ Low-risk dataset not found: {low_path}")
+            log.error("Download from Kaggle and process")
+            raise FileNotFoundError(f"Dataset not found: {low_path}")
+        
+        low_df = pd.read_csv(low_path)
+        datasets["low_risk"] = low_df
+        
+        # Get available patient IDs and randomly select
+        if 'patient_id' in low_df.columns:
+            available_ids = list(low_df['patient_id'].unique())
+            if len(available_ids) < LOW_PATIENTS:
+                log.warning(f"Requested {LOW_PATIENTS} low-risk patients but only {len(available_ids)} available")
+                selected_low = available_ids
+            else:
+                selected_low = random.sample(available_ids, LOW_PATIENTS)
+            
+            for pid in selected_low:
+                selected_patients.append({"id": str(pid), "dataset": "low_risk", "df": low_df})
+            
+            log.info(f"Low-risk dataset loaded: {low_path}")
+            log.info(f"  Selected {len(selected_low)} patients: {selected_low}")
+    
+    return datasets, selected_patients
 
 def load_patient_specific_data(patient_id, full_df):
     """
@@ -823,26 +863,11 @@ def send_batch(batch_info):
 
 # --------------- MAIN LOOP ----------------
 def main():
-    full_df=ensure_dataset()
+    datasets, selected_patients = load_datasets()
     
-    # Detect available IDs in dataset
-    if 'patient_id' in full_df.columns:
-        available_ids = sorted(full_df['patient_id'].unique())
-        
-        # Use PATIENT_RANGE to select which patients this edge handles
-        selected_ids = parse_patient_range(PATIENT_RANGE, available_ids)
-        
-        # Legacy NUM_PATIENTS support (if PATIENT_RANGE not set and NUM_PATIENTS > 0)
-        if PATIENT_RANGE.lower() == "all" and NUM_PATIENTS > 0:
-            selected_ids = selected_ids[:NUM_PATIENTS]
-        
-        patient_ids = [str(pid) for pid in selected_ids]
-        log.info(f"IDs detected in dataset: {len(available_ids)} unique")
-        log.info(f"PATIENT_RANGE: '{PATIENT_RANGE}' → selected {len(patient_ids)} patients: {patient_ids}")
-    else:
-        # Fallback to generic IDs if there's no patient_id column
-        patient_ids = ["PID-001", "PID-002", "PID-003", "PID-004", "PID-005", "PID-006", "PID-007"]
-        log.warning("Dataset without 'patient_id' column, using generic IDs")
+    if not selected_patients:
+        log.error("No patients selected. Check HIGH_PATIENTS and LOW_PATIENTS configuration.")
+        return
     
     patients = []
     
@@ -852,33 +877,35 @@ def main():
     log.info(f"  Scenario: {SCENARIO}")
     log.info(f"    Compression: {'ENABLED' if SCENARIO_CONFIG[SCENARIO]['compression_enabled'] else 'DISABLED'}")
     log.info(f"    Adaptation: {'DYNAMIC' if SCENARIO_CONFIG[SCENARIO]['dynamic_adaptation'] else 'STATIC'}")
-    log.info(f"  Dataset: {DATASET_TYPE.upper()}")
-    log.info(f"  Patients: {len(patient_ids)} ({patient_ids[0]} to {patient_ids[-1]})")
+    log.info(f"  Patients: {HIGH_PATIENTS} high-risk + {LOW_PATIENTS} low-risk = {len(selected_patients)} total")
     log.info("="*60)
     log.info("Loading patient data:")
     
-    for i, pid in enumerate(patient_ids):
-        patient_df = load_patient_specific_data(pid, full_df)
-        # Force HIGH risk for high_risk dataset to simulate critical patients
-        # Only force half of the patients to persistent HIGH risk (alternating)
-        force_high = (DATASET_TYPE == "high_risk") and (i % 2 == 0)  # Even index patients stay HIGH
+    for i, patient_info in enumerate(selected_patients):
+        pid = patient_info["id"]
+        dataset_type = patient_info["dataset"]
+        full_df = patient_info["df"]
         
-        # Start with a nominal NEWS2 score that will be updated by fog on first batch
-        # For high_risk: use higher initial scores to ensure proper risk category assignment
-        # For low_risk: start at 0 (MINIMAL) since data represents healthy individuals
-        if DATASET_TYPE == "high_risk":
+        # Load patient-specific data from the appropriate dataset
+        patient_df = load_patient_specific_data(pid, full_df)
+        
+        # High-risk patients: force persistent HIGH risk
+        # Low-risk patients: start at MINIMAL
+        is_high_risk = (dataset_type == "high_risk")
+        force_high = is_high_risk and (i % 2 == 0)  # Alternate for variety
+        
+        if is_high_risk:
             initial_news2 = 7 if force_high else 5
         else:
             initial_news2 = 0  # Low risk dataset starts at MINIMAL
         
-        # Create patient - config params (spo2_scale, on_o2) loaded from config file
+        # Create patient
         patient = Patient(pid, patient_df, news2=initial_news2, 
                          persistent_high_risk=force_high, force_high_risk=force_high)
         
         # Log patient configuration
-        risk_type = "PERSISTENT HIGH" if force_high else "VARIABLE"
-        log.info(f"  {pid}: spo2_scale={patient.spo2_scale}, on_o2={patient.on_o2}, "
-                f"consciousness={patient.base_consciousness} ({risk_type})")
+        risk_type = f"{dataset_type.upper()} - {'PERSISTENT HIGH' if force_high else 'VARIABLE'}"
+        log.info(f"  {pid}: {risk_type} | spo2_scale={patient.spo2_scale}, on_o2={patient.on_o2}")
         
         patients.append(patient)
     

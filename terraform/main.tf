@@ -401,7 +401,7 @@ resource "aws_key_pair" "cloud" {
 # =============================================================================
 
 resource "aws_instance" "edge" {
-  count = var.edge_count
+  for_each = { for e in var.edge_configs : e.id => e }
 
   ami           = data.aws_ami.ubuntu.id
   instance_type = var.edge_instance_type
@@ -420,10 +420,10 @@ resource "aws_instance" "edge" {
   }
 
   user_data = templatefile("${path.module}/scripts/edge_setup.sh", {
-    edge_id       = "edge-${format("%02d", count.index + 1)}"
-    patient_range = local.patient_ranges[count.index]
+    edge_id       = each.value.id
+    high_patients = each.value.high_patients
+    low_patients  = each.value.low_patients
     mqtt_broker   = aws_instance.fog.private_ip
-    dataset_type  = var.dataset_type
     git_repo      = var.git_repo_url
     git_branch    = var.git_branch
     memory_limit  = var.edge_memory_limit_mb
@@ -432,10 +432,11 @@ resource "aws_instance" "edge" {
   })
 
   tags = {
-    Name         = "${var.project_name}-edge-${format("%02d", count.index + 1)}"
+    Name         = "${var.project_name}-${each.value.id}"
     Project      = var.project_name
     Role         = "edge"
-    PatientRange = local.patient_ranges[count.index]
+    HighPatients = each.value.high_patients
+    LowPatients  = each.value.low_patients
   }
 
   depends_on = [aws_instance.fog]
@@ -504,16 +505,3 @@ resource "aws_instance" "cloud" {
   }
 }
 
-# =============================================================================
-# Local Values - Patient Range Distribution
-# =============================================================================
-
-locals {
-  total_patients    = var.total_patients
-  patients_per_edge = ceil(local.total_patients / var.edge_count)
-
-  patient_ranges = [
-    for i in range(var.edge_count) :
-    "${(i * local.patients_per_edge) + 1}-${min((i + 1) * local.patients_per_edge, local.total_patients)}"
-  ]
-}

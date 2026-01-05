@@ -83,10 +83,28 @@ variable "ssh_public_key" {
 # Instance Configuration
 # -----------------------------------------------------------------------------
 
-variable "edge_count" {
-  description = "Number of Edge instances to create"
-  type        = number
-  default     = 4
+variable "edge_configs" {
+  description = "Configuration for each edge device with dataset selection"
+  type = list(object({
+    id            = string
+    high_patients = number
+    low_patients  = number
+  }))
+
+  validation {
+    condition     = length(var.edge_configs) > 0
+    error_message = "At least one edge must be configured in edge_configs"
+  }
+
+  validation {
+    condition     = alltrue([for e in var.edge_configs : e.high_patients >= 0 && e.low_patients >= 0])
+    error_message = "Patient counts must be non-negative"
+  }
+
+  validation {
+    condition     = alltrue([for e in var.edge_configs : e.high_patients + e.low_patients > 0])
+    error_message = "Each edge must have at least 1 patient (high_patients + low_patients > 0)"
+  }
 }
 
 variable "edge_instance_type" {
@@ -137,18 +155,6 @@ variable "git_branch" {
   description = "Git branch to deploy"
   type        = string
   default     = "main"
-}
-
-variable "dataset_type" {
-  description = "Dataset type to use (high_risk or low_risk)"
-  type        = string
-  default     = "high_risk"
-}
-
-variable "total_patients" {
-  description = "Total number of patients in dataset (for range calculation)"
-  type        = number
-  default     = 53 # BIDMC dataset has 53 patients
 }
 
 variable "scenario" {

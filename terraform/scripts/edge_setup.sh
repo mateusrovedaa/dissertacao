@@ -8,9 +8,9 @@ set -e
 
 # Variables from Terraform
 EDGE_ID="${edge_id}"
-PATIENT_RANGE="${patient_range}"
+HIGH_PATIENTS="${high_patients}"
+LOW_PATIENTS="${low_patients}"
 MQTT_BROKER="${mqtt_broker}"
-DATASET_TYPE="${dataset_type}"
 GIT_REPO="${git_repo}"
 GIT_BRANCH="${git_branch}"
 MEMORY_LIMIT_MB="${memory_limit}"
@@ -22,7 +22,8 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "======================================"
 echo "VISPAC Edge Setup - $EDGE_ID"
-echo "Patient Range: $PATIENT_RANGE"
+echo "High Risk Patients: $HIGH_PATIENTS"
+echo "Low Risk Patients: $LOW_PATIENTS"
 echo "======================================"
 
 # Update system
@@ -45,11 +46,14 @@ sudo -u vispac python3 -m venv venv
 sudo -u vispac ./venv/bin/pip install --upgrade pip
 sudo -u vispac ./venv/bin/pip install -r requirements.txt
 
-# Download dataset if needed
-if [ "$DATASET_TYPE" == "high_risk" ]; then
-    echo "Downloading BIDMC dataset..."
-    sudo -u vispac ./venv/bin/python download_bidmc_data.py || echo "Dataset download failed, may already exist"
+# Download datasets based on patient configuration
+if [ "$HIGH_PATIENTS" -gt 0 ]; then
+    echo "Downloading high_risk (BIDMC) dataset..."
+    sudo -u vispac ./venv/bin/python download_bidmc_data.py || echo "BIDMC dataset download failed, may already exist"
 fi
+
+# Note: low_risk dataset needs to be pre-loaded or downloaded separately
+# The low_risk dataset uses processed Kaggle data
 
 # =============================================================================
 # Resource Limits Setup (using cgroups v2)
@@ -110,8 +114,8 @@ Type=simple
 User=vispac
 WorkingDirectory=/home/vispac/app
 Environment="EDGE_ID=$EDGE_ID"
-Environment="PATIENT_RANGE=$PATIENT_RANGE"
-Environment="DATASET_TYPE=$DATASET_TYPE"
+Environment="HIGH_PATIENTS=$HIGH_PATIENTS"
+Environment="LOW_PATIENTS=$LOW_PATIENTS"
 Environment="MQTT_BROKER=$MQTT_BROKER"
 Environment="MQTT_PORT=1883"
 Environment="EDGE_USE_MQTT=1"

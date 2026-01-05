@@ -39,19 +39,16 @@ output "fog_private_ip" {
   value       = aws_instance.fog.private_ip
 }
 
-output "edge_public_ips" {
-  description = "Public IPs of Edge instances (us-east-1)"
-  value       = aws_instance.edge[*].public_ip
-}
-
-output "edge_private_ips" {
-  description = "Private IPs of Edge instances"
-  value       = aws_instance.edge[*].private_ip
-}
-
-output "edge_patient_ranges" {
-  description = "Patient ranges assigned to each edge"
-  value       = local.patient_ranges
+output "edge_instances" {
+  description = "Edge instance details"
+  value = {
+    for id, instance in aws_instance.edge : id => {
+      public_ip     = instance.public_ip
+      private_ip    = instance.private_ip
+      high_patients = var.edge_configs[index(var.edge_configs[*].id, id)].high_patients
+      low_patients  = var.edge_configs[index(var.edge_configs[*].id, id)].low_patients
+    }
+  }
 }
 
 # SSH Commands
@@ -60,8 +57,10 @@ output "ssh_commands" {
   value = {
     cloud = "ssh -i ~/.ssh/vispac ubuntu@${aws_instance.cloud.public_ip}"
     fog   = "ssh -i ~/.ssh/vispac ubuntu@${aws_instance.fog.public_ip}"
-    edges = [for i, ip in aws_instance.edge[*].public_ip :
-    "ssh -i ~/.ssh/vispac ubuntu@${ip}  # edge-${format("%02d", i + 1)} (patients ${local.patient_ranges[i]})"]
+    edges = {
+      for id, instance in aws_instance.edge :
+      id => "ssh -i ~/.ssh/vispac ubuntu@${instance.public_ip}"
+    }
   }
 }
 
@@ -76,14 +75,10 @@ output "architecture_summary" {
 
     REGION: ${var.aws_region} (Edge + Fog)
     ----------------------------------------
-    | Layer | Subnet        | IP              |
-    |-------|---------------|-----------------|
-    | Edge  | ${var.edge_subnet_cidr} | ${join(", ", aws_instance.edge[*].private_ip)} |
-    | Fog   | ${var.fog_subnet_cidr} | ${aws_instance.fog.private_ip}     |
-
+    
     Edge Instances:
-    %{for i in range(var.edge_count)~}
-      - edge-${format("%02d", i + 1)}: patients ${local.patient_ranges[i]} (${aws_instance.edge[i].private_ip})
+    %{for cfg in var.edge_configs~}
+      - ${cfg.id}: ${cfg.high_patients} high + ${cfg.low_patients} low patients
     %{endfor~}
 
     Fog Services:
@@ -97,10 +92,6 @@ output "architecture_summary" {
 
     REGION: ${var.cloud_region} (Cloud)
     ----------------------------------------
-    | Layer | Subnet        | IP              |
-    |-------|---------------|-----------------|
-    | Cloud | ${var.cloud_subnet_cidr} | ${aws_instance.cloud.private_ip}    |
-
     Cloud Services:
       - Cloud API:  ${aws_instance.cloud.private_ip}:9000
       - PostgreSQL: ${aws_instance.cloud.private_ip}:5432
