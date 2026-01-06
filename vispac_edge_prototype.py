@@ -161,19 +161,22 @@ SCENARIO_CONFIG = {
     "scenario1_baseline": {
         "compression_enabled": False,
         "dynamic_adaptation": False,
-        "fixed_collection_interval": 1,  # 1 second - high frequency raw collection
-        "description": "Baseline - Raw data collection without compression"
+        "use_risk_based_intervals": False,  # Fixed 1s for ALL patients regardless of risk
+        "fixed_collection_interval": 1,  # 1 second - same for everyone
+        "description": "Baseline - Raw data collection without compression, fixed 1s intervals"
     },
     "scenario2_static": {
         "compression_enabled": True,
         "dynamic_adaptation": False,
-        "fixed_collection_interval": None,  # Uses risk-based intervals but no backoff
-        "description": "Static compression without dynamic adaptation"
+        "use_risk_based_intervals": True,  # Uses risk-based intervals but no backoff
+        "fixed_collection_interval": None,  # Uses PARAMS[risk] intervals
+        "description": "Static compression with risk-based intervals, no dynamic adaptation"
     },
     "scenario3_vispac": {
         "compression_enabled": True,
         "dynamic_adaptation": True,
-        "fixed_collection_interval": None,  # Full dynamic behavior
+        "use_risk_based_intervals": True,  # Full dynamic behavior with backoff
+        "fixed_collection_interval": None,
         "description": "Full ViSPAC with compression and dynamic adaptation"
     }
 }
@@ -570,20 +573,37 @@ class Patient:
         return {"timestamp":time.time(),"hr":float(hr_val),"spo2":float(spo2_val)}
 
     def update_risk(self,score):
-        # In non-adaptive scenarios, don't change intervals based on NEWS2
-        if not SCENARIO_CONFIG[SCENARIO]["dynamic_adaptation"]:
-            # Still track the score for logging, but don't update intervals
-            old=getattr(self,'risk','N/A')
-            self.news2=score
-            self.risk=('HIGH' if score>=7 else 'MODERATE' if score>=5 else 'LOW' if score>=1 else 'MINIMAL')
-            if self.risk!=old:
-                log.info(f"[RISK] {self.id}: {old} → {self.risk} (NEWS2={score}) [STATIC - intervals unchanged]")
-            # Still set PARAMS to avoid AttributeError (use fixed baseline)
-            p=PARAMS[self.risk]
-            self.ic_fc,self.ic_spo2=p['ic_fc'],p['ic_spo2']
-            self.eps_fc,self.eps_spo2=p['eps_fc'],p['eps_spo2']
-            self.dc_fc,self.dc_spo2=p['dc_fc'],p['dc_spo2']
-            self.t_sdt,self.ic_max=p['t_sdt'],p['ic_max']
+        scenario_cfg = SCENARIO_CONFIG[SCENARIO]
+        
+        # Track risk score and classification
+        old=getattr(self,'risk','N/A')
+        self.news2=score
+        self.risk=('HIGH' if score>=7 else 'MODERATE' if score>=5 else 'LOW' if score>=1 else 'MINIMAL')
+        
+        # Log risk changes
+        if self.risk!=old:
+            mode = "DYNAMIC" if scenario_cfg["dynamic_adaptation"] else "STATIC"
+            log.info(f"[RISK] {self.id}: {old} → {self.risk} (NEWS2={score}) [{mode}]")
+        
+        # Set interval parameters based on scenario configuration
+        if not scenario_cfg["use_risk_based_intervals"]:
+            # Scenario 1: Fixed intervals for ALL patients (no risk-based variation)
+            fixed_interval = scenario_cfg["fixed_collection_interval"]
+            self.ic_fc, self.ic_spo2 = fixed_interval, fixed_interval
+            p = PARAMS["MINIMAL"]  # Use default params for backoff thresholds
+            self.eps_fc, self.eps_spo2 = p['eps_fc'], p['eps_spo2']
+            self.dc_fc, self.dc_spo2 = p['dc_fc'], p['dc_spo2']
+            self.t_sdt, self.ic_max = p['t_sdt'], p['ic_max']
+        else:
+            # Scenario 2 & 3: Use risk-based intervals from PARAMS
+            p = PARAMS[self.risk]
+            self.ic_fc, self.ic_spo2 = p['ic_fc'], p['ic_spo2']
+            self.eps_fc, self.eps_spo2 = p['eps_fc'], p['eps_spo2']
+            self.dc_fc, self.dc_spo2 = p['dc_fc'], p['dc_spo2']
+            self.t_sdt, self.ic_max = p['t_sdt'], p['ic_max']
+        
+        # Dynamic adaptation (backoff) only for scenario 3
+        if not scenario_cfg["dynamic_adaptation"]:
             return
         
         # Persistent HIGH risk patients never drop below NEWS2=7
@@ -784,15 +804,23 @@ def send_batch(batch_info):
     total_raw_size = sum(p.get('raw_size', 0) for p in batch)
     payload_str=json.dumps(batch)
     raw_payload_size = len(payload_str.encode())
-    payload, hdr = lossless(payload_str, risk)
-
-    if hdr == 'none':
-        if risk == 'HIGH':
-            log.info(f"  [STEP 2] Lossless Compression skipped (HIGH Risk).")
-        elif raw_payload_size < HUFF_MIN:
-            log.info(f"  [STEP 2] Lossless Compression skipped (Batch {raw_payload_size}b < threshold {HUFF_MIN}b).")
+    
+    # Apply lossless compression only if compression is enabled for this scenario
+    scenario_cfg = SCENARIO_CONFIG[SCENARIO]
+    if scenario_cfg["compression_enabled"]:
+        payload, hdr = lossless(payload_str, risk)
+        if hdr == 'none':
+            if risk == 'HIGH':
+                log.info(f"  [STEP 2] Lossless Compression skipped (HIGH Risk).")
+            elif raw_payload_size < HUFF_MIN:
+                log.info(f"  [STEP 2] Lossless Compression skipped (Batch {raw_payload_size}b < threshold {HUFF_MIN}b).")
+        else:
+            log.info(f"  [STEP 2] Lossless Compression applied ({hdr}).")
     else:
-        log.info(f"  [STEP 2] Lossless Compression applied ({hdr}).")
+        # No compression - send raw JSON
+        payload = payload_str.encode()
+        hdr = 'none'
+        log.info(f"  [STEP 2] Compression DISABLED (scenario: {SCENARIO})")
 
     final_size=len(payload)
     start=time.time()
