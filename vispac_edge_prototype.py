@@ -63,9 +63,13 @@ import requests
 import logging
 import os
 import uuid
+import signal
+import sys
 import pandas as pd
 import numpy as np
 from compressors import SwingingDoorCompressor, Huffman, LZW
+
+
 
 # ---------------- Logging Setup (must be first) ----------------
 LOG_PATH = "logs/edge_log.txt"
@@ -75,6 +79,15 @@ logging.basicConfig(level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[logging.FileHandler(LOG_PATH, 'w'), logging.StreamHandler()])
 log = logging.getLogger("vispac-edge")
+
+# Signal handler for graceful shutdown (allows finally block to execute)
+def signal_handler(signum, frame):
+    """Convert SIGTERM to KeyboardInterrupt for graceful shutdown."""
+    log.info(f"Received signal {signum}, initiating graceful shutdown...")
+    raise KeyboardInterrupt("Shutdown signal received")
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
 
 # Try to import YAML for configuration
 try:
