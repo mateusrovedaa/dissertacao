@@ -31,10 +31,31 @@ allowed_ssh_cidrs = ["YOUR_IP/32"]  # e.g., ["203.0.113.50/32"]
 # =============================================================================
 
 edge_configs = [
-  { id = "edge-01", high_patients = 0, low_patients = 5 },   # Low risk only
-  { id = "edge-02", high_patients = 2, low_patients = 3 },   # Mixed
-  { id = "edge-03", high_patients = 4, low_patients = 0 },   # High risk only
-  { id = "edge-04", high_patients = 0, low_patients = 6 },   # Low risk only
+  # Pure LOW risk edges (6 edges)
+  { id = "edge-01", high_patients = 0, low_patients = 5 },
+  { id = "edge-02", high_patients = 0, low_patients = 6 },
+  { id = "edge-03", high_patients = 0, low_patients = 4 },
+  { id = "edge-04", high_patients = 0, low_patients = 5 },
+  { id = "edge-05", high_patients = 0, low_patients = 7 },
+  { id = "edge-06", high_patients = 0, low_patients = 4 },
+  
+  # Pure HIGH risk edges (6 edges - these will have persistent HIGH patients)
+  { id = "edge-07", high_patients = 4, low_patients = 0 },
+  { id = "edge-08", high_patients = 5, low_patients = 0 },
+  { id = "edge-09", high_patients = 3, low_patients = 0 },
+  { id = "edge-10", high_patients = 4, low_patients = 0 },
+  { id = "edge-11", high_patients = 6, low_patients = 0 },
+  { id = "edge-12", high_patients = 4, low_patients = 0 },
+  
+  # Mixed edges (8 edges - combination of high and low)
+  { id = "edge-13", high_patients = 2, low_patients = 3 },
+  { id = "edge-14", high_patients = 3, low_patients = 2 },
+  { id = "edge-15", high_patients = 1, low_patients = 4 },
+  { id = "edge-16", high_patients = 4, low_patients = 1 },
+  { id = "edge-17", high_patients = 2, low_patients = 4 },
+  { id = "edge-18", high_patients = 3, low_patients = 3 },
+  { id = "edge-19", high_patients = 1, low_patients = 5 },
+  { id = "edge-20", high_patients = 2, low_patients = 2 },
 ]
 
 # Instance types
@@ -56,6 +77,10 @@ git_branch   = "main"
 # - scenario2_static:   Compression enabled, fixed intervals (no adaptation)
 # - scenario3_vispac:   Full ViSPAC with compression and dynamic adaptation
 scenario = "scenario3_vispac"
+
+# Experiment duration in hours
+# After this time, services stop and logs are archived to /home/ubuntu/
+experiment_duration_hours = 8
 
 # Database password (change this!)
 db_password = "your-secure-password-here"

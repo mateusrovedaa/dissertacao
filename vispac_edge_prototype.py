@@ -341,9 +341,18 @@ def load_datasets():
     """
     Load datasets based on HIGH_PATIENTS and LOW_PATIENTS configuration.
     Returns a dict with loaded DataFrames and selected patient IDs.
+    
+    Uses EDGE_ID as seed for reproducible random selection - same edge
+    always gets the same patients across experiment runs.
     """
     datasets = {}
     selected_patients = []
+    
+    # Set seed based on EDGE_ID for reproducible patient selection
+    # This ensures the same edge always gets the same patients
+    seed_value = hash(EDGE_ID) % (2**32)
+    random.seed(seed_value)
+    log.info(f"Random seed set to {seed_value} (based on EDGE_ID: {EDGE_ID})")
     
     # Load high_risk dataset if needed
     if HIGH_PATIENTS > 0:
@@ -356,9 +365,9 @@ def load_datasets():
         high_df = pd.read_csv(high_path)
         datasets["high_risk"] = high_df
         
-        # Get available patient IDs and randomly select
+        # Get available patient IDs, sort for consistency, then randomly select
         if 'patient_id' in high_df.columns:
-            available_ids = list(high_df['patient_id'].unique())
+            available_ids = sorted(high_df['patient_id'].unique())
             if len(available_ids) < HIGH_PATIENTS:
                 log.warning(f"Requested {HIGH_PATIENTS} high-risk patients but only {len(available_ids)} available")
                 selected_high = available_ids
@@ -382,9 +391,9 @@ def load_datasets():
         low_df = pd.read_csv(low_path)
         datasets["low_risk"] = low_df
         
-        # Get available patient IDs and randomly select
+        # Get available patient IDs, sort for consistency, then randomly select
         if 'patient_id' in low_df.columns:
-            available_ids = list(low_df['patient_id'].unique())
+            available_ids = sorted(low_df['patient_id'].unique())
             if len(available_ids) < LOW_PATIENTS:
                 log.warning(f"Requested {LOW_PATIENTS} low-risk patients but only {len(available_ids)} available")
                 selected_low = available_ids
@@ -496,10 +505,11 @@ class Patient:
     """
     
     def __init__(self, pid, df, news2=0, persistent_high_risk=False, force_high_risk=False,
-                 spo2_scale=None, on_o2=None):
+                 spo2_scale=None, on_o2=None, dataset_type="low_risk"):
         self.id=pid; self.df=df; self.idx=random.randrange(len(df))
         self.persistent_high_risk=persistent_high_risk
         self.force_high_risk=force_high_risk
+        self.dataset_type=dataset_type  # Track which dataset this patient came from
         self.scenario_step=0
         
         # Configure patient-specific parameters from config
@@ -517,7 +527,7 @@ class Patient:
         overrides = CONFIG.get("patient_overrides", {}).get(str(self.id), {})
         
         # Get dataset-specific probabilities
-        dataset_config = CONFIG.get("datasets", {}).get(DATASET_TYPE, {})
+        dataset_config = CONFIG.get("datasets", {}).get(self.dataset_type, {})
         probs = dataset_config.get("probabilities", {})
         defaults = CONFIG.get("defaults", {})
         
@@ -574,7 +584,7 @@ class Patient:
         if self.persistent_high_risk and score<7: 
             score=7
         # For high_risk dataset: non-persistent patients should stay MODERATE or HIGH (never LOW/MINIMAL)
-        elif DATASET_TYPE == "high_risk" and not self.persistent_high_risk and score<5:
+        elif self.dataset_type == "high_risk" and not self.persistent_high_risk and score<5:
             score=5  # Minimum MODERATE risk for variable patients
         old=getattr(self,'risk','N/A')
         self.news2=score
@@ -624,7 +634,7 @@ class Patient:
         }
         
         # For high_risk dataset: add forced parameters to ensure MODERATE or HIGH
-        if DATASET_TYPE == "high_risk":
+        if self.dataset_type == "high_risk":
             if self.force_high_risk:
                 # Persistent HIGH patients get vitals that ensure NEWS2 >= 7
                 forced = get_initial_vitals_high_risk()
@@ -899,9 +909,10 @@ def main():
         else:
             initial_news2 = 0  # Low risk dataset starts at MINIMAL
         
-        # Create patient
+        # Create patient with dataset_type for proper risk behavior
         patient = Patient(pid, patient_df, news2=initial_news2, 
-                         persistent_high_risk=force_high, force_high_risk=force_high)
+                         persistent_high_risk=force_high, force_high_risk=force_high,
+                         dataset_type=dataset_type)
         
         # Log patient configuration
         risk_type = f"{dataset_type.upper()} - {'PERSISTENT HIGH' if force_high else 'VARIABLE'}"

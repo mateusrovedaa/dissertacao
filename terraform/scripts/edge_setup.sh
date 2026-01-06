@@ -16,6 +16,7 @@ GIT_BRANCH="${git_branch}"
 MEMORY_LIMIT_MB="${memory_limit}"
 CPU_LIMIT_PERCENT="${cpu_limit}"
 SCENARIO="${scenario}"
+EXPERIMENT_DURATION="${experiment_duration}"
 
 LOG_FILE="/var/log/vispac-edge-setup.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -163,8 +164,47 @@ systemctl start vispac-edge
 echo "======================================"
 echo "Edge setup complete!"
 echo "Edge ID: $EDGE_ID"
-echo "Patient Range: $PATIENT_RANGE"
+echo "High Patients: $HIGH_PATIENTS"
+echo "Low Patients: $LOW_PATIENTS"
 echo "MQTT Broker: $MQTT_BROKER:1883"
 echo "Memory Limit: $${MEMORY_LIMIT_MB}MB"
 echo "CPU Limit: $${CPU_LIMIT_PERCENT}%"
+echo "Experiment Duration: $${EXPERIMENT_DURATION}h"
 echo "======================================"
+
+# =============================================================================
+# Schedule Experiment End and Log Collection
+# =============================================================================
+
+apt-get install -y at
+systemctl enable atd
+systemctl start atd
+
+cat > /home/ubuntu/collect_logs.sh << 'COLLECT_SCRIPT'
+#!/bin/bash
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+HOSTNAME=$(hostname)
+LOG_ARCHIVE="/home/ubuntu/vispac_logs_$${HOSTNAME}_$${TIMESTAMP}.tar.gz"
+
+echo "Stopping VISPAC services..."
+systemctl stop vispac-edge || true
+
+echo "Collecting logs..."
+tar -czf "$LOG_ARCHIVE" \
+    /var/log/vispac-*.log \
+    /home/vispac/app/logs/ \
+    2>/dev/null || true
+
+echo "Logs archived to: $LOG_ARCHIVE"
+chown ubuntu:ubuntu "$LOG_ARCHIVE"
+
+echo "Experiment completed at $(date)" > /home/ubuntu/experiment_complete.txt
+COLLECT_SCRIPT
+
+chmod +x /home/ubuntu/collect_logs.sh
+chown ubuntu:ubuntu /home/ubuntu/collect_logs.sh
+
+# Schedule the log collection
+echo "/home/ubuntu/collect_logs.sh" | at now + $${EXPERIMENT_DURATION} hours
+
+echo "Log collection scheduled in $${EXPERIMENT_DURATION} hours"

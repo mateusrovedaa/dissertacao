@@ -10,6 +10,7 @@ set -e
 DB_PASSWORD="${db_password}"
 GIT_REPO="${git_repo}"
 GIT_BRANCH="${git_branch}"
+EXPERIMENT_DURATION="${experiment_duration}"
 
 LOG_FILE="/var/log/vispac-cloud-setup.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -109,4 +110,42 @@ echo "Cloud setup complete!"
 echo "Cloud API: 0.0.0.0:9000"
 echo "PostgreSQL: 127.0.0.1:5432"
 echo "Database: vispac_db"
+echo "Experiment Duration: $${EXPERIMENT_DURATION}h"
 echo "======================================"
+
+# =============================================================================
+# Schedule Experiment End and Log Collection
+# =============================================================================
+
+apt-get install -y at
+systemctl enable atd
+systemctl start atd
+
+cat > /home/ubuntu/collect_logs.sh << 'COLLECT_SCRIPT'
+#!/bin/bash
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+HOSTNAME=$(hostname)
+LOG_ARCHIVE="/home/ubuntu/vispac_logs_$${HOSTNAME}_$${TIMESTAMP}.tar.gz"
+
+echo "Stopping VISPAC services..."
+systemctl stop vispac-cloud postgresql || true
+
+echo "Collecting logs..."
+tar -czf "$LOG_ARCHIVE" \
+    /var/log/vispac-*.log \
+    /home/vispac/app/logs/ \
+    /var/log/postgresql/ \
+    2>/dev/null || true
+
+echo "Logs archived to: $LOG_ARCHIVE"
+chown ubuntu:ubuntu "$LOG_ARCHIVE"
+
+echo "Experiment completed at $(date)" > /home/ubuntu/experiment_complete.txt
+COLLECT_SCRIPT
+
+chmod +x /home/ubuntu/collect_logs.sh
+chown ubuntu:ubuntu /home/ubuntu/collect_logs.sh
+
+echo "/home/ubuntu/collect_logs.sh" | at now + $${EXPERIMENT_DURATION} hours
+
+echo "Log collection scheduled in $${EXPERIMENT_DURATION} hours"

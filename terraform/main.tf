@@ -420,15 +420,16 @@ resource "aws_instance" "edge" {
   }
 
   user_data = templatefile("${path.module}/scripts/edge_setup.sh", {
-    edge_id       = each.value.id
-    high_patients = each.value.high_patients
-    low_patients  = each.value.low_patients
-    mqtt_broker   = aws_instance.fog.private_ip
-    git_repo      = var.git_repo_url
-    git_branch    = var.git_branch
-    memory_limit  = var.edge_memory_limit_mb
-    cpu_limit     = var.edge_cpu_limit_percent
-    scenario      = var.scenario
+    edge_id             = each.value.id
+    high_patients       = each.value.high_patients
+    low_patients        = each.value.low_patients
+    mqtt_broker         = aws_instance.fog.private_ip
+    git_repo            = var.git_repo_url
+    git_branch          = var.git_branch
+    memory_limit        = var.edge_memory_limit_mb
+    cpu_limit           = var.edge_cpu_limit_percent
+    scenario            = var.scenario
+    experiment_duration = var.experiment_duration_hours
   })
 
   tags = {
@@ -460,9 +461,10 @@ resource "aws_instance" "fog" {
   }
 
   user_data = templatefile("${path.module}/scripts/fog_setup.sh", {
-    cloud_url  = "http://${aws_instance.cloud.private_ip}:9000"
-    git_repo   = var.git_repo_url
-    git_branch = var.git_branch
+    cloud_url           = "http://${aws_instance.cloud.private_ip}:9000"
+    git_repo            = var.git_repo_url
+    git_branch          = var.git_branch
+    experiment_duration = var.experiment_duration_hours
   })
 
   tags = {
@@ -493,9 +495,10 @@ resource "aws_instance" "cloud" {
   }
 
   user_data = templatefile("${path.module}/scripts/cloud_setup.sh", {
-    db_password = var.db_password
-    git_repo    = var.git_repo_url
-    git_branch  = var.git_branch
+    db_password         = var.db_password
+    git_repo            = var.git_repo_url
+    git_branch          = var.git_branch
+    experiment_duration = var.experiment_duration_hours
   })
 
   tags = {

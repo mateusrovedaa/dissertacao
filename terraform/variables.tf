@@ -168,6 +168,17 @@ variable "scenario" {
   }
 }
 
+variable "experiment_duration_hours" {
+  description = "Duration of experiment in hours. Services stop and logs are archived after this time."
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = var.experiment_duration_hours > 0 && var.experiment_duration_hours <= 168
+    error_message = "Experiment duration must be between 1 and 168 hours (1 week max)"
+  }
+}
+
 variable "db_password" {
   description = "PostgreSQL password for cloud database"
   type        = string
