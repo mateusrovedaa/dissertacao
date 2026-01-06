@@ -149,6 +149,7 @@ COLLECT_SCRIPT
 chmod +x /home/ubuntu/collect_logs.sh
 chown ubuntu:ubuntu /home/ubuntu/collect_logs.sh
 
-echo "/home/ubuntu/collect_logs.sh" | at now + $${EXPERIMENT_DURATION} hours
+# Fog stops 30 minutes after edges to collect remaining data
+echo "/home/ubuntu/collect_logs.sh" | at now + $${EXPERIMENT_DURATION} hours + 30 minutes
 
-echo "Log collection scheduled in $${EXPERIMENT_DURATION} hours"
+echo "Log collection scheduled in $${EXPERIMENT_DURATION}h 30m (30 min after edges)"

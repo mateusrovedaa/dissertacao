@@ -578,6 +578,12 @@ class Patient:
             self.risk=('HIGH' if score>=7 else 'MODERATE' if score>=5 else 'LOW' if score>=1 else 'MINIMAL')
             if self.risk!=old:
                 log.info(f"[RISK] {self.id}: {old} → {self.risk} (NEWS2={score}) [STATIC - intervals unchanged]")
+            # Still set PARAMS to avoid AttributeError (use fixed baseline)
+            p=PARAMS[self.risk]
+            self.ic_fc,self.ic_spo2=p['ic_fc'],p['ic_spo2']
+            self.eps_fc,self.eps_spo2=p['eps_fc'],p['eps_spo2']
+            self.dc_fc,self.dc_spo2=p['dc_fc'],p['dc_spo2']
+            self.t_sdt,self.ic_max=p['t_sdt'],p['ic_max']
             return
         
         # Persistent HIGH risk patients never drop below NEWS2=7

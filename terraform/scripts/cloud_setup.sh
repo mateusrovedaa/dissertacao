@@ -146,6 +146,8 @@ COLLECT_SCRIPT
 chmod +x /home/ubuntu/collect_logs.sh
 chown ubuntu:ubuntu /home/ubuntu/collect_logs.sh
 
-echo "/home/ubuntu/collect_logs.sh" | at now + $${EXPERIMENT_DURATION} hours
+# Cloud stops 1 hour after edges to ensure all data is stored
+CLOUD_DURATION=$(($${EXPERIMENT_DURATION} + 1))
+echo "/home/ubuntu/collect_logs.sh" | at now + $${CLOUD_DURATION} hours
 
-echo "Log collection scheduled in $${EXPERIMENT_DURATION} hours"
+echo "Log collection scheduled in $${CLOUD_DURATION}h (1h after edges)"
