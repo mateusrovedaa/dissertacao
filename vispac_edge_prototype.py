@@ -818,8 +818,12 @@ def lossless(txt: str, risk: str):
     if risk == 'HIGH' or size < HUFF_MIN:
         return raw, 'none'
     if size < LZW_MIN:
+        # Huffman.compress returns dict with 'payload', 'codes', 'padding'
+        # We need to serialize this dict for transmission
         return json.dumps(Huffman().compress(txt)).encode(), 'hushman'
-    return json.dumps(LZW().compress(txt)).encode(), 'lzw'
+    # LZW.compress already returns a base64-encoded string
+    # Just encode it to bytes, no need for json.dumps
+    return LZW().compress(txt).encode(), 'lzw'
 
 def send_batch(batch_info):
     """Send a batch of compressed data to the fog layer.
