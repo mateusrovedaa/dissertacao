@@ -181,9 +181,9 @@ SCENARIO_CONFIG = {
     "scenario2_static": {
         "compression_enabled": True,
         "dynamic_adaptation": False,
-        "use_risk_based_intervals": True,  # Uses risk-based intervals but no backoff
-        "fixed_collection_interval": None,  # Uses PARAMS[risk] intervals
-        "description": "Static compression with risk-based intervals, no dynamic adaptation"
+        "use_risk_based_intervals": False,  # Fixed IC for all
+        "fixed_collection_interval": 1,  # Same fixed 1s interval
+        "description": "Static compression with fixed intervals, no dynamic adaptation"
     },
     "scenario3_vispac": {
         "compression_enabled": True,
@@ -219,6 +219,16 @@ LATENCY_METRICS = {
     "min_latency_ms": float('inf'),
     "max_latency_ms": 0,
     "by_risk": {"HIGH": [], "MODERATE": [], "LOW": [], "MINIMAL": []}
+}
+
+# Compression metrics storage (by risk level)
+COMPRESSION_METRICS = {
+    "by_risk": {
+        "HIGH": {"raw_bytes": 0, "compressed_bytes": 0, "count": 0},
+        "MODERATE": {"raw_bytes": 0, "compressed_bytes": 0, "count": 0},
+        "LOW": {"raw_bytes": 0, "compressed_bytes": 0, "count": 0},
+        "MINIMAL": {"raw_bytes": 0, "compressed_bytes": 0, "count": 0}
+    }
 }
 
 def parse_patient_range(range_str, available_ids):
@@ -287,6 +297,25 @@ def log_latency_summary():
         if latencies:
             avg_risk = sum(latencies) / len(latencies)
             log.info(f"  {risk}: {len(latencies)} sends, avg {avg_risk:.1f}ms")
+
+def log_compression_summary():
+    """Log summary of compression metrics by risk level."""
+    m = COMPRESSION_METRICS
+    total_raw = sum(r["raw_bytes"] for r in m["by_risk"].values())
+    total_comp = sum(r["compressed_bytes"] for r in m["by_risk"].values())
+    
+    if total_raw == 0:
+        log.info("[COMPRESSION SUMMARY] No data collected")
+        return
+    
+    overall_ratio = (1 - total_comp / total_raw) * 100 if total_raw > 0 else 0
+    log.info(f"[COMPRESSION SUMMARY] Edge {EDGE_ID}")
+    log.info(f"  Total: {total_raw/1024:.1f}KB → {total_comp/1024:.1f}KB ({overall_ratio:.1f}% reduction)")
+    
+    for risk, metrics in m["by_risk"].items():
+        if metrics["count"] > 0:
+            ratio = (1 - metrics["compressed_bytes"] / metrics["raw_bytes"]) * 100 if metrics["raw_bytes"] > 0 else 0
+            log.info(f"  {risk}: {metrics['raw_bytes']/1024:.1f}KB → {metrics['compressed_bytes']/1024:.1f}KB ({ratio:.1f}%) | {metrics['count']} samples")
 
 def reconstruct_signal(original_signal_buf, compressed_signal):
     """Reconstruct a signal from SDT-compressed points using linear interpolation.
@@ -1022,6 +1051,10 @@ def main():
                         vitals=p.get_current_vitals()
                         entry={'patient_id':p.id,'signal':'hr','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size, 'vitals':vitals}
                         assembler.add(entry,p.risk)
+                        # Register compression metrics by risk
+                        COMPRESSION_METRICS["by_risk"][p.risk]["raw_bytes"] += raw_size
+                        COMPRESSION_METRICS["by_risk"][p.risk]["compressed_bytes"] += post_sdt_size
+                        COMPRESSION_METRICS["by_risk"][p.risk]["count"] += 1
                     p.fc_buf=[]; p.last_fc_col=now; p.backoff('hr',v['hr'])
                 
                 # SpO2 collection - same scenario logic
@@ -1056,6 +1089,10 @@ def main():
                         vitals=p.get_current_vitals()
                         entry={'patient_id':p.id,'signal':'spo2','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size, 'vitals':vitals}
                         assembler.add(entry,p.risk)
+                        # Register compression metrics by risk
+                        COMPRESSION_METRICS["by_risk"][p.risk]["raw_bytes"] += raw_size
+                        COMPRESSION_METRICS["by_risk"][p.risk]["compressed_bytes"] += post_sdt_size
+                        COMPRESSION_METRICS["by_risk"][p.risk]["count"] += 1
                     p.spo2_buf=[]; p.last_spo2_col=now; p.backoff('spo2',v['spo2'])
             
             for b in assembler.get_ready_batches():
@@ -1086,6 +1123,8 @@ def main():
             log.info(f"  SpO2:    Mean={avg_spo2:.4f}% | Min={min_spo2:.4f}% | Max={max_spo2:.4f}%")
         log.info("-"*50)
         log_latency_summary()
+        log.info("-"*50)
+        log_compression_summary()
         log.info("="*50)
 
 
