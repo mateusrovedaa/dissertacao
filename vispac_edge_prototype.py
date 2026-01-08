@@ -182,8 +182,8 @@ SCENARIO_CONFIG = {
         "compression_enabled": True,
         "dynamic_adaptation": False,
         "use_risk_based_intervals": False,  # Fixed IC for all
-        "fixed_collection_interval": 15,
-        "description": "Static compression with fixed 30s intervals, no dynamic adaptation"
+        "fixed_collection_interval": 15,  # 15 seconds (VSAC simulation) - allows ~30 points for effective SDT
+        "description": "Static compression with fixed 15s intervals, no dynamic adaptation"
     },
     "scenario3_vispac": {
         "compression_enabled": True,
@@ -221,13 +221,13 @@ LATENCY_METRICS = {
     "by_risk": {"HIGH": [], "MODERATE": [], "LOW": [], "MINIMAL": []}
 }
 
-# Compression metrics storage (by risk level)
-COMPRESSION_METRICS = {
+# Send metrics storage - tracks raw→final size (after lossy+lossless compression)
+SEND_METRICS = {
     "by_risk": {
-        "HIGH": {"raw_bytes": 0, "compressed_bytes": 0, "count": 0},
-        "MODERATE": {"raw_bytes": 0, "compressed_bytes": 0, "count": 0},
-        "LOW": {"raw_bytes": 0, "compressed_bytes": 0, "count": 0},
-        "MINIMAL": {"raw_bytes": 0, "compressed_bytes": 0, "count": 0}
+        "HIGH": {"raw_bytes": 0, "final_bytes": 0, "count": 0},
+        "MODERATE": {"raw_bytes": 0, "final_bytes": 0, "count": 0},
+        "LOW": {"raw_bytes": 0, "final_bytes": 0, "count": 0},
+        "MINIMAL": {"raw_bytes": 0, "final_bytes": 0, "count": 0}
     }
 }
 
@@ -299,23 +299,23 @@ def log_latency_summary():
             log.info(f"  {risk}: {len(latencies)} sends, avg {avg_risk:.1f}ms")
 
 def log_compression_summary():
-    """Log summary of compression metrics by risk level."""
-    m = COMPRESSION_METRICS
+    """Log summary of send metrics (raw→final after lossy+lossless) by risk level."""
+    m = SEND_METRICS
     total_raw = sum(r["raw_bytes"] for r in m["by_risk"].values())
-    total_comp = sum(r["compressed_bytes"] for r in m["by_risk"].values())
+    total_final = sum(r["final_bytes"] for r in m["by_risk"].values())
     
     if total_raw == 0:
-        log.info("[COMPRESSION SUMMARY] No data collected")
+        log.info("[COMPRESSION SUMMARY] No data sent")
         return
     
-    overall_ratio = (1 - total_comp / total_raw) * 100 if total_raw > 0 else 0
+    overall_ratio = (1 - total_final / total_raw) * 100 if total_raw > 0 else 0
     log.info(f"[COMPRESSION SUMMARY] Edge {EDGE_ID}")
-    log.info(f"  Total: {total_raw/1024:.1f}KB → {total_comp/1024:.1f}KB ({overall_ratio:.1f}% reduction)")
+    log.info(f"  Total: {total_raw/1024:.1f}KB → {total_final/1024:.1f}KB ({overall_ratio:.1f}% reduction)")
     
     for risk, metrics in m["by_risk"].items():
         if metrics["count"] > 0:
-            ratio = (1 - metrics["compressed_bytes"] / metrics["raw_bytes"]) * 100 if metrics["raw_bytes"] > 0 else 0
-            log.info(f"  {risk}: {metrics['raw_bytes']/1024:.1f}KB → {metrics['compressed_bytes']/1024:.1f}KB ({ratio:.1f}%) | {metrics['count']} samples")
+            ratio = (1 - metrics["final_bytes"] / metrics["raw_bytes"]) * 100 if metrics["raw_bytes"] > 0 else 0
+            log.info(f"  {risk}: {metrics['raw_bytes']/1024:.1f}KB → {metrics['final_bytes']/1024:.1f}KB ({ratio:.1f}%) | {metrics['count']} batches")
 
 def reconstruct_signal(original_signal_buf, compressed_signal):
     """Reconstruct a signal from SDT-compressed points using linear interpolation.
@@ -918,6 +918,11 @@ def send_batch(batch_info):
             LATENCY_METRICS["max_latency_ms"] = max(LATENCY_METRICS["max_latency_ms"], latency_ms)
             LATENCY_METRICS["by_risk"][risk].append(latency_ms)
             
+            # Track send metrics for compression summary (raw→final after both stages)
+            SEND_METRICS["by_risk"][risk]["raw_bytes"] += total_raw_size
+            SEND_METRICS["by_risk"][risk]["final_bytes"] += final_size
+            SEND_METRICS["by_risk"][risk]["count"] += 1
+            
             ratio=100*final_size/total_raw_size if total_raw_size>0 else 0
             log.info(f"[MQTT SEND] {EDGE_ID} | Batch '{risk}' | {len(batch)} pkts | {total_raw_size}b→{final_size}b ({ratio:.1f}%) | {hdr} | {latency_ms:.1f}ms | scores={resp.get('scores')}")
             return resp.get('scores',{})
@@ -943,6 +948,11 @@ def send_batch(batch_info):
         LATENCY_METRICS["min_latency_ms"] = min(LATENCY_METRICS["min_latency_ms"], latency_ms)
         LATENCY_METRICS["max_latency_ms"] = max(LATENCY_METRICS["max_latency_ms"], latency_ms)
         LATENCY_METRICS["by_risk"][risk].append(latency_ms)
+        
+        # Track send metrics for compression summary (raw→final after both stages)
+        SEND_METRICS["by_risk"][risk]["raw_bytes"] += total_raw_size
+        SEND_METRICS["by_risk"][risk]["final_bytes"] += final_size
+        SEND_METRICS["by_risk"][risk]["count"] += 1
         
         ratio=100*final_size/total_raw_size if total_raw_size>0 else 0
         log.info(f"[SEND] {EDGE_ID} | Batch '{risk}' | {len(batch)} pkts | {total_raw_size}b→{final_size}b ({ratio:.1f}%) | {hdr} | {latency_ms:.1f}ms | scores={resp.get('scores')}")
@@ -1055,10 +1065,7 @@ def main():
                         vitals=p.get_current_vitals()
                         entry={'patient_id':p.id,'signal':'hr','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size, 'vitals':vitals}
                         assembler.add(entry,p.risk)
-                        # Register compression metrics by risk
-                        COMPRESSION_METRICS["by_risk"][p.risk]["raw_bytes"] += raw_size
-                        COMPRESSION_METRICS["by_risk"][p.risk]["compressed_bytes"] += post_sdt_size
-                        COMPRESSION_METRICS["by_risk"][p.risk]["count"] += 1
+
                     p.fc_buf=[]; p.last_fc_col=now; p.backoff('hr',v['hr'])
                 
                 # SpO2 collection - same scenario logic
@@ -1093,10 +1100,6 @@ def main():
                         vitals=p.get_current_vitals()
                         entry={'patient_id':p.id,'signal':'spo2','risco':p.risk,'data':comp, 'raw_size':raw_size, 'post_sdt_size':post_sdt_size, 'vitals':vitals}
                         assembler.add(entry,p.risk)
-                        # Register compression metrics by risk
-                        COMPRESSION_METRICS["by_risk"][p.risk]["raw_bytes"] += raw_size
-                        COMPRESSION_METRICS["by_risk"][p.risk]["compressed_bytes"] += post_sdt_size
-                        COMPRESSION_METRICS["by_risk"][p.risk]["count"] += 1
                     p.spo2_buf=[]; p.last_spo2_col=now; p.backoff('spo2',v['spo2'])
             
             for b in assembler.get_ready_batches():
