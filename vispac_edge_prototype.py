@@ -175,21 +175,21 @@ SCENARIO_CONFIG = {
         "compression_enabled": False,
         "dynamic_adaptation": False,
         "use_risk_based_intervals": False,  # Fixed 1s for ALL patients regardless of risk
-        "fixed_collection_interval": 1,  # 1 second - same for everyone
+        "fixed_collection_interval": 1,  # 1 second - high frequency raw data
         "description": "Baseline - Raw data collection without compression, fixed 1s intervals"
     },
     "scenario2_static": {
         "compression_enabled": True,
         "dynamic_adaptation": False,
         "use_risk_based_intervals": False,  # Fixed IC for all
-        "fixed_collection_interval": 1,  # Same fixed 1s interval
-        "description": "Static compression with fixed intervals, no dynamic adaptation"
+        "fixed_collection_interval": 15,
+        "description": "Static compression with fixed 30s intervals, no dynamic adaptation"
     },
     "scenario3_vispac": {
         "compression_enabled": True,
         "dynamic_adaptation": True,
         "use_risk_based_intervals": True,  # Full dynamic behavior with backoff
-        "fixed_collection_interval": None,
+        "fixed_collection_interval": None,  # Uses PARAMS[risk] intervals
         "description": "Full ViSPAC with compression and dynamic adaptation"
     }
 }
