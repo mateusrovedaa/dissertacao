@@ -423,6 +423,7 @@ resource "aws_instance" "edge" {
     edge_id             = each.value.id
     high_patients       = each.value.high_patients
     low_patients        = each.value.low_patients
+    specific_patients   = lookup(each.value, "specific_patients", "")
     mqtt_broker         = aws_instance.fog.private_ip
     git_repo            = var.git_repo_url
     git_branch          = var.git_branch

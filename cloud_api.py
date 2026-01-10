@@ -27,7 +27,7 @@ from typing import List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body, Path
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-import sqlite3, json, os, logging
+import sqlite3, json, os, logging, time
 import uvicorn
 
 # Ensure logs directory exists
@@ -184,6 +184,7 @@ async def ingest_by_risk(
     risk: str = Path(..., description="Risk stream: high|moderate|low|minimal"),
     items: List[IngestItem] = Body(...),
 ):
+    start_time = time.time()
     r = risk.lower()
     if r not in RISK_VALUES:
         raise HTTPException(400, f"Invalid risk stream: {risk}")
@@ -259,6 +260,11 @@ async def ingest_by_risk(
         raise HTTPException(500, f"DB error: {e}")
 
     log.info(f"Successfully stored {len(items)} items to DB ({risk.upper()})")
+    
+    # Log structured metrics
+    duration_ms = (time.time() - start_time) * 1000
+    log.info(f"[CLOUD_METRICS] risk={r} items={len(items)} insert_ms={duration_ms:.2f}")
+    
     return {"accepted": len(items), "risk": r}
 
 

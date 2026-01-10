@@ -158,9 +158,15 @@ DATASET_PATHS = {
 HIGH_PATIENTS = int(os.environ.get("HIGH_PATIENTS", "2"))
 LOW_PATIENTS = int(os.environ.get("LOW_PATIENTS", "3"))
 
+# Specific patient IDs to use (overrides random selection)
+# Format: comma-separated list of patient IDs from high_risk dataset
+#   SPECIFIC_PATIENTS=11,46,38,26,17 python vispac_edge_prototype.py
+# These patients have highest NEWS2 score variability for demonstrating risk changes
+SPECIFIC_PATIENTS = os.environ.get("SPECIFIC_PATIENTS", "")
+
 # Validate that at least one patient is configured
-if HIGH_PATIENTS == 0 and LOW_PATIENTS == 0:
-    raise ValueError("At least one patient must be configured (HIGH_PATIENTS or LOW_PATIENTS > 0)")
+if HIGH_PATIENTS == 0 and LOW_PATIENTS == 0 and not SPECIFIC_PATIENTS:
+    raise ValueError("At least one patient must be configured (HIGH_PATIENTS, LOW_PATIENTS > 0, or SPECIFIC_PATIENTS)")
 
 # =============================================================================
 # SCENARIO CONFIGURATION
@@ -184,14 +190,15 @@ SCENARIO_CONFIG = {
         "dynamic_adaptation": False,
         "use_risk_based_intervals": False,  # Fixed IC for all
         "fixed_collection_interval": 15,  # 15 seconds (VSAC simulation) - allows ~30 points for effective SDT
-        "description": "Static compression with fixed 15s intervals, no dynamic adaptation"
+        "fixed_t_sdt": 5,  # SDT threshold = 5 (VSAC original paper)
+        "description": "Static compression with fixed 15s intervals, t_sdt=5 (VSAC original)"
     },
     "scenario3_vispac": {
         "compression_enabled": True,
         "dynamic_adaptation": True,
         "use_risk_based_intervals": True,  # Full dynamic behavior with backoff
         "fixed_collection_interval": None,  # Uses PARAMS[risk] intervals
-        "description": "Full ViSPAC with compression and dynamic adaptation"
+        "cription": "Full ViSPAC with compression and dynamic adaptation"
     }
 }
 
@@ -440,11 +447,13 @@ SAMPLE_DATA=[(80,98),(81,98),(80,99),(82,98),(83,98),(82,97),(85,98),(84,98),(86
 
 def load_datasets():
     """
-    Load datasets based on HIGH_PATIENTS and LOW_PATIENTS configuration.
+    Load datasets based on HIGH_PATIENTS, LOW_PATIENTS, or SPECIFIC_PATIENTS configuration.
     Returns a dict with loaded DataFrames and selected patient IDs.
     
     Uses EDGE_ID as seed for reproducible random selection - same edge
     always gets the same patients across experiment runs.
+    
+    If SPECIFIC_PATIENTS is set, uses those exact patient IDs from high_risk dataset.
     """
     datasets = {}
     selected_patients = []
@@ -454,6 +463,30 @@ def load_datasets():
     seed_value = hash(EDGE_ID) % (2**32)
     random.seed(seed_value)
     log.info(f"Random seed set to {seed_value} (based on EDGE_ID: {EDGE_ID})")
+    
+    # If SPECIFIC_PATIENTS is set, use those exact IDs from high_risk dataset
+    if SPECIFIC_PATIENTS:
+        high_path = DATASET_PATHS["high_risk"]
+        if not os.path.exists(high_path):
+            log.error(f"❌ High-risk dataset not found: {high_path}")
+            raise FileNotFoundError(f"Dataset not found: {high_path}")
+        
+        high_df = pd.read_csv(high_path)
+        datasets["high_risk"] = high_df
+        
+        # Parse specific patient IDs
+        specific_ids = [int(pid.strip()) for pid in SPECIFIC_PATIENTS.split(",") if pid.strip()]
+        available_ids = list(high_df['patient_id'].unique())
+        
+        for pid in specific_ids:
+            if pid in available_ids:
+                selected_patients.append({"id": str(pid), "dataset": "high_risk", "df": high_df})
+            else:
+                log.warning(f"Patient ID {pid} not found in high_risk dataset")
+        
+        log.info(f"SPECIFIC_PATIENTS mode: using patient IDs {specific_ids}")
+        log.info(f"  High-variability patients for risk change demonstration")
+        return datasets, selected_patients
     
     # Load high_risk dataset if needed
     if HIGH_PATIENTS > 0:
@@ -685,13 +718,15 @@ class Patient:
         
         # Set interval parameters based on scenario configuration
         if not scenario_cfg["use_risk_based_intervals"]:
-            # Scenario 1: Fixed intervals for ALL patients (no risk-based variation)
+            # Scenario 1 & 2: Fixed intervals for ALL patients (no risk-based variation)
             fixed_interval = scenario_cfg["fixed_collection_interval"]
             self.ic_fc, self.ic_spo2 = fixed_interval, fixed_interval
             p = PARAMS["MINIMAL"]  # Use default params for backoff thresholds
             self.eps_fc, self.eps_spo2 = p['eps_fc'], p['eps_spo2']
             self.dc_fc, self.dc_spo2 = p['dc_fc'], p['dc_spo2']
-            self.t_sdt, self.ic_max = p['t_sdt'], p['ic_max']
+            # Use fixed t_sdt if specified (scenario 2 uses t_sdt=5 as per VSAC original)
+            self.t_sdt = scenario_cfg.get("fixed_t_sdt", p['t_sdt'])
+            self.ic_max = p['ic_max']
         else:
             # Scenario 2 & 3: Use risk-based intervals from PARAMS
             p = PARAMS[self.risk]

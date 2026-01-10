@@ -37,7 +37,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Body, BackgroundTasks
 from pydantic import BaseModel
-import json, uvicorn, logging
+import json, uvicorn, logging, time
 import os, requests
 try:
     import paho.mqtt.client as mqtt
@@ -85,10 +85,14 @@ async def lifespan(app: FastAPI):
                 ctype = data.get('X-Compression-Type','none').lower()
                 raw_payload = data.get('payload','').encode()
                 log.info(f"[MQTT] Received message: {len(raw_payload)} bytes, compression={ctype}")
+                start_time = time.time()
                 for handler in log.handlers:
                     handler.flush()
                 try:
+                    process_start = time.time()
                     scores, to_cloud = _process_batch_payload(ctype, raw_payload)
+                    process_duration = (time.time() - process_start) * 1000
+                    
                     log.info(f"[MQTT] Processed batch: {len(scores)} patients")
                     for handler in log.handlers:
                         handler.flush()
@@ -99,8 +103,18 @@ async def lifespan(app: FastAPI):
                     if reply_topic:
                         client.publish(reply_topic, json.dumps({'error': str(e)}))
                     return
+                
                 # forward to cloud
+                fwd_start = time.time()
                 _forward_to_cloud(to_cloud)
+                fwd_duration = (time.time() - fwd_start) * 1000
+                
+                # Total pipeline latency for this batch
+                total_duration = (time.time() - start_time) * 1000
+                
+                # Log structured metrics for analysis
+                log.info(f"[FOG_METRICS] type=mqtt batch_size={len(scores)} process_ms={process_duration:.2f} forward_ms={fwd_duration:.2f} total_ms={total_duration:.2f}")
+                
                 # respond
                 if reply_topic:
                     client.publish(reply_topic, json.dumps({'scores': scores}))
@@ -266,7 +280,7 @@ def score_temp(temp: float) -> int:
 def score_bp(sys_bp: float) -> int:
     """Calculate NEWS2 score for systolic blood pressure.
     
-    Scoring thresholds (mmHg):
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                Scoring thresholds (mmHg):
         - ≤90: Score 3 (Critical - severe hypotension)
         - 91-100: Score 2 (Moderate hypotension)
         - 101-110: Score 1 (Mild hypotension)
@@ -394,12 +408,23 @@ def _forward_to_cloud(grouped: DefaultDict[str, List[Dict[str, Any]]]):
 
 @app.post("/vispac/upload_batch")
 async def upload_batch(req: Request, background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    start_time = time.time()
     ctype = req.headers.get("X-Compression-Type","none").lower()
     raw = await req.body()
     log.info(f"Received batch: {len(raw)} bytes, compression={ctype}")
+    
+    process_start = time.time()
     scores, to_cloud = _process_batch_payload(ctype, raw)
+    process_duration = (time.time() - process_start) * 1000
+    
     log.info(f"Processed batch: {len(scores)} patients, forwarding to cloud")
     background_tasks.add_task(_forward_to_cloud, to_cloud)
+    
+    # HTTP requests return immediately after processing, backgrounding the forwarding
+    # We can't measure forwarding time here, but we can measure processing time
+    total_duration = (time.time() - start_time) * 1000
+    log.info(f"[FOG_METRICS] type=http batch_size={len(scores)} process_ms={process_duration:.2f} forward_ms=0.00 total_ms={total_duration:.2f}")
+    
     return {"batch_processed": len(scores), "scores": scores}
 
 
