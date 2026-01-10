@@ -67,6 +67,7 @@ import signal
 import sys
 import pandas as pd
 import numpy as np
+import psutil
 from compressors import SwingingDoorCompressor, Huffman, LZW
 
 
@@ -231,6 +232,14 @@ SEND_METRICS = {
     }
 }
 
+# Resource metrics storage - tracks CPU and memory usage over time
+RESOURCE_METRICS = {
+    "cpu_samples": [],      # List of CPU % samples
+    "memory_samples": [],   # List of memory MB samples
+    "sample_count": 0,
+    "process_pid": None     # Will be set to current process PID
+}
+
 def parse_patient_range(range_str, available_ids):
     """
     Parse PATIENT_RANGE environment variable.
@@ -316,6 +325,53 @@ def log_compression_summary():
         if metrics["count"] > 0:
             ratio = (1 - metrics["final_bytes"] / metrics["raw_bytes"]) * 100 if metrics["raw_bytes"] > 0 else 0
             log.info(f"  {risk}: {metrics['raw_bytes']/1024:.1f}KB → {metrics['final_bytes']/1024:.1f}KB ({ratio:.1f}%) | {metrics['count']} batches")
+
+def sample_resources():
+    """Sample current CPU and memory usage of this process.
+    
+    Collects metrics using psutil for energy efficiency analysis.
+    Should be called periodically during the main loop.
+    """
+    try:
+        process = psutil.Process(RESOURCE_METRICS["process_pid"])
+        
+        # CPU percent since last call (requires interval or previous call)
+        cpu_percent = process.cpu_percent()
+        
+        # Memory in MB
+        memory_mb = process.memory_info().rss / (1024 * 1024)
+        
+        RESOURCE_METRICS["cpu_samples"].append(cpu_percent)
+        RESOURCE_METRICS["memory_samples"].append(memory_mb)
+        RESOURCE_METRICS["sample_count"] += 1
+    except Exception as e:
+        log.debug(f"Failed to sample resources: {e}")
+
+def log_resource_summary():
+    """Log summary of CPU and memory usage metrics."""
+    m = RESOURCE_METRICS
+    
+    if m["sample_count"] == 0:
+        log.info("[RESOURCE SUMMARY] No resource samples collected")
+        return
+    
+    cpu_samples = m["cpu_samples"]
+    mem_samples = m["memory_samples"]
+    
+    log.info(f"[RESOURCE SUMMARY] Edge {EDGE_ID}")
+    log.info(f"  Samples collected: {m['sample_count']}")
+    
+    if cpu_samples:
+        avg_cpu = np.mean(cpu_samples)
+        min_cpu = np.min(cpu_samples)
+        max_cpu = np.max(cpu_samples)
+        log.info(f"  CPU: Avg={avg_cpu:.1f}% | Min={min_cpu:.1f}% | Max={max_cpu:.1f}%")
+    
+    if mem_samples:
+        avg_mem = np.mean(mem_samples)
+        min_mem = np.min(mem_samples)
+        max_mem = np.max(mem_samples)
+        log.info(f"  Memory: Avg={avg_mem:.1f}MB | Min={min_mem:.1f}MB | Max={max_mem:.1f}MB")
 
 def reconstruct_signal(original_signal_buf, compressed_signal):
     """Reconstruct a signal from SDT-compressed points using linear interpolation.
@@ -965,6 +1021,9 @@ def send_batch(batch_info):
 def main():
     datasets, selected_patients = load_datasets()
     
+    # Initialize resource monitoring
+    RESOURCE_METRICS["process_pid"] = os.getpid()
+    
     if not selected_patients:
         log.error("No patients selected. Check HIGH_PATIENTS and LOW_PATIENTS configuration.")
         return
@@ -1112,6 +1171,10 @@ def main():
             
             queue_sizes = " | ".join([f"{r[:3]}:{q['size']}b" for r,q in assembler.queues.items()])
             print(f"\r[{time.strftime('%H:%M:%S')}] Monitoring... Queues: [ {queue_sizes} ]", end="")
+            
+            # Sample CPU and memory usage periodically
+            sample_resources()
+            
             time.sleep(0.5)
 
     finally:
@@ -1132,6 +1195,8 @@ def main():
         log_latency_summary()
         log.info("-"*50)
         log_compression_summary()
+        log.info("-"*50)
+        log_resource_summary()
         log.info("="*50)
 
 
