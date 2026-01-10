@@ -86,9 +86,10 @@ variable "ssh_public_key" {
 variable "edge_configs" {
   description = "Configuration for each edge device with dataset selection"
   type = list(object({
-    id            = string
-    high_patients = number
-    low_patients  = number
+    id                = string
+    high_patients     = number
+    low_patients      = number
+    specific_patients = optional(string)
   }))
 
   validation {
@@ -102,8 +103,8 @@ variable "edge_configs" {
   }
 
   validation {
-    condition     = alltrue([for e in var.edge_configs : e.high_patients + e.low_patients > 0])
-    error_message = "Each edge must have at least 1 patient (high_patients + low_patients > 0)"
+    condition     = alltrue([for e in var.edge_configs : (e.high_patients + e.low_patients > 0) || (e.specific_patients != null)])
+    error_message = "Each edge must have at least 1 patient (high_patients + low_patients > 0) or defined specific_patients"
   }
 }
 

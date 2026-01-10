@@ -789,6 +789,17 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             border-radius: 8px;
             font-size: 1em;
         }}
+
+        #backoffPatientSelect {{
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 15px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border: 1px solid rgba(0, 212, 255, 0.3);
+            border-radius: 8px;
+            font-size: 1em;
+        }}
         
         .generated-time {{
             text-align: center;
@@ -1150,11 +1161,17 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                             title: {{
                                 display: true,
                                 text: 'Tempo da Simulação'
-                            }}
+                            }},
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
                         }},
                         y: {{
                             beginAtZero: true,
                             max: 12,
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            },
                             title: {{
                                 display: true,
                                 text: 'Escore NEWS2'
@@ -1258,10 +1275,16 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                             title: {{
                                 display: true,
                                 text: 'Tempo da Simulação'
-                            }}
+                            }},
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
                         }},
                         y: {{
                             beginAtZero: true,
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            },
                             title: {{
                                 display: true,
                                 text: 'Intervalo de Coleta (segundos)'
