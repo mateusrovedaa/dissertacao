@@ -464,8 +464,8 @@ def load_datasets():
     random.seed(seed_value)
     log.info(f"Random seed set to {seed_value} (based on EDGE_ID: {EDGE_ID})")
     
-    # If SPECIFIC_PATIENTS is set, use those exact IDs from high_risk dataset
-    if SPECIFIC_PATIENTS:
+    # If SPECIFIC_PATIENTS is set (and not 'none' or empty), use those exact IDs from high_risk dataset
+    if SPECIFIC_PATIENTS and SPECIFIC_PATIENTS.lower() not in ('none', ''):
         high_path = DATASET_PATHS["high_risk"]
         if not os.path.exists(high_path):
             log.error(f"❌ High-risk dataset not found: {high_path}")
