@@ -176,7 +176,7 @@ variable "experiment_duration_hours" {
 
   validation {
     condition     = var.experiment_duration_hours > 0 && var.experiment_duration_hours <= 168
-    error_message = "Experiment duration must be between 1 and 168 hours (1 week max)"
+    error_message = "Experiment duration must be greater than 0 and at most 168 hours (1 week max). Fractional values like 0.5 (30min) are allowed."
   }
 }
 

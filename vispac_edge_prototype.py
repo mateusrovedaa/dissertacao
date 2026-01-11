@@ -1058,6 +1058,11 @@ def main():
     
     # Initialize resource monitoring
     RESOURCE_METRICS["process_pid"] = os.getpid()
+    # Warm-up call to cpu_percent()
+    try:
+        psutil.Process(os.getpid()).cpu_percent()
+    except Exception:
+        pass
     
     if not selected_patients:
         log.error("No patients selected. Check HIGH_PATIENTS and LOW_PATIENTS configuration.")
