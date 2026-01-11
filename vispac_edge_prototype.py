@@ -244,7 +244,8 @@ RESOURCE_METRICS = {
     "cpu_samples": [],      # List of CPU % samples
     "memory_samples": [],   # List of memory MB samples
     "sample_count": 0,
-    "process_pid": None     # Will be set to current process PID
+    "process_pid": None,    # Will be set to current process PID
+    "process": None         # Persistent psutil.Process object
 }
 
 def parse_patient_range(range_str, available_ids):
@@ -340,10 +341,13 @@ def sample_resources():
     Should be called periodically during the main loop.
     """
     try:
-        process = psutil.Process(RESOURCE_METRICS["process_pid"])
+        process = RESOURCE_METRICS["process"]
+        if process is None:
+            return
         
-        # CPU percent since last call (requires interval or previous call)
-        cpu_percent = process.cpu_percent()
+        # CPU percent with small interval for accurate measurement
+        # Using interval=0.1 ensures we get actual usage, not 0.0
+        cpu_percent = process.cpu_percent(interval=0.1)
         
         # Memory in MB
         memory_mb = process.memory_info().rss / (1024 * 1024)
@@ -1056,13 +1060,9 @@ def send_batch(batch_info):
 def main():
     datasets, selected_patients = load_datasets()
     
-    # Initialize resource monitoring
+    # Initialize resource monitoring with persistent Process object
     RESOURCE_METRICS["process_pid"] = os.getpid()
-    # Warm-up call to cpu_percent()
-    try:
-        psutil.Process(os.getpid()).cpu_percent()
-    except Exception:
-        pass
+    RESOURCE_METRICS["process"] = psutil.Process(os.getpid())
     
     if not selected_patients:
         log.error("No patients selected. Check HIGH_PATIENTS and LOW_PATIENTS configuration.")
