@@ -198,7 +198,7 @@ SCENARIO_CONFIG = {
         "dynamic_adaptation": True,
         "use_risk_based_intervals": True,  # Full dynamic behavior with backoff
         "fixed_collection_interval": None,  # Uses PARAMS[risk] intervals
-        "cription": "Full ViSPAC with compression and dynamic adaptation"
+        "description": "Full ViSPAC with compression and dynamic adaptation"
     }
 }
 
