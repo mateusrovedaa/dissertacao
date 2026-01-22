@@ -59,8 +59,9 @@ services:
       target: edge
     command: python vispac_edge_prototype.py
     environment:
-      DATASET_TYPE: low_risk  # Options: low_risk or high_risk
-      NUM_PATIENTS: 0  # Number of patients to simulate (0 = all available, default 7 for testing)
+      HIGH_PATIENTS: ${HIGH_PATIENTS:-2}   # Number of high-risk patients (random selection)
+      LOW_PATIENTS: ${LOW_PATIENTS:-3}     # Number of low-risk patients (random selection)
+      SCENARIO: ${SCENARIO:-scenario3_vispac}  # Test scenario
       API_URL: http://fog:8000/vispac/upload_batch
       EDGE_USE_MQTT: "1"
       MQTT_BROKER: mqtt

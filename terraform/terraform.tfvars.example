@@ -1,0 +1,86 @@
+# =============================================================================
+# Example terraform.tfvars
+# Copy this file to terraform.tfvars and fill in the values
+# =============================================================================
+
+# AWS Region
+aws_region = "us-east-1"
+
+# Project naming
+project_name = "vispac"
+environment  = "dev"
+
+# SSH public key (generate with: ssh-keygen -t rsa -b 4096 -f ~/.ssh/vispac)
+ssh_public_key = "ssh-rsa AAAA... your-email@example.com"
+
+# SSH access restriction (use your IP for security)
+allowed_ssh_cidrs = ["YOUR_IP/32"]  # e.g., ["203.0.113.50/32"]
+
+# =============================================================================
+# Edge Configuration - Per-edge dataset selection
+# =============================================================================
+# Each edge must be explicitly configured with:
+#   - id: Unique identifier for the edge (e.g., "edge-01")
+#   - high_patients: Number of patients from high_risk dataset (randomly selected)
+#   - low_patients: Number of patients from low_risk dataset (randomly selected)
+# 
+# Examples:
+#   - Only low_risk:  { id = "edge-01", high_patients = 0, low_patients = 5 }
+#   - Only high_risk: { id = "edge-02", high_patients = 4, low_patients = 0 }
+#   - Mixed:          { id = "edge-03", high_patients = 2, low_patients = 3 }
+# =============================================================================
+
+edge_configs = [
+  # Pure LOW risk edges (6 edges)
+  { id = "edge-01", high_patients = 0, low_patients = 5 },
+  { id = "edge-02", high_patients = 0, low_patients = 6 },
+  { id = "edge-03", high_patients = 0, low_patients = 4 },
+  { id = "edge-04", high_patients = 0, low_patients = 5 },
+  { id = "edge-05", high_patients = 0, low_patients = 7 },
+  { id = "edge-06", high_patients = 0, low_patients = 4 },
+  
+  # Pure HIGH risk edges (6 edges - these will have persistent HIGH patients)
+  { id = "edge-07", high_patients = 4, low_patients = 0 },
+  { id = "edge-08", high_patients = 5, low_patients = 0 },
+  { id = "edge-09", high_patients = 3, low_patients = 0 },
+  { id = "edge-10", high_patients = 4, low_patients = 0 },
+  { id = "edge-11", high_patients = 6, low_patients = 0 },
+  { id = "edge-12", high_patients = 4, low_patients = 0 },
+  
+  # Mixed edges (8 edges - combination of high and low)
+  { id = "edge-13", high_patients = 2, low_patients = 3 },
+  { id = "edge-14", high_patients = 3, low_patients = 2 },
+  { id = "edge-15", high_patients = 1, low_patients = 4 },
+  { id = "edge-16", high_patients = 4, low_patients = 1 },
+  { id = "edge-17", high_patients = 2, low_patients = 4 },
+  { id = "edge-18", high_patients = 3, low_patients = 3 },
+  { id = "edge-19", high_patients = 1, low_patients = 5 },
+  { id = "edge-20", high_patients = 2, low_patients = 2 },
+]
+
+# Instance types
+edge_instance_type  = "t3.micro"  # 2 vCPU, 1GB RAM
+fog_instance_type   = "t3.small"  # 2 vCPU, 2GB RAM  
+cloud_instance_type = "t3.small"  # 2 vCPU, 2GB RAM
+
+# Edge resource limits (simulating constrained IoT devices)
+edge_memory_limit_mb   = 256    # 256MB RAM limit
+edge_cpu_limit_percent = 50     # 50% of 1 vCPU
+
+# Application configuration
+git_repo_url = "https://github.com/YOUR_USER/dissertacao.git"
+git_branch   = "main"
+
+# Test scenario configuration
+# Options: scenario1_baseline, scenario2_static, scenario3_vispac
+# - scenario1_baseline: No compression, fixed 1s collection (raw data)
+# - scenario2_static:   Compression enabled, fixed intervals (no adaptation)
+# - scenario3_vispac:   Full ViSPAC with compression and dynamic adaptation
+scenario = "scenario3_vispac"
+
+# Experiment duration in hours
+# After this time, services stop and logs are archived to /home/ubuntu/
+experiment_duration_hours = 8
+
+# Database password (change this!)
+db_password = "your-secure-password-here"

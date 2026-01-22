@@ -1,8 +1,33 @@
+"""ViSPAC Cloud Layer API.
+
+This module implements the cloud tier of the ViSPAC (Vital Signs Prioritized 
+Adaptive Compression) edge-fog-cloud architecture for healthcare IoT systems.
+
+The cloud layer is responsible for:
+    - Receiving processed vital signs data from the fog layer
+    - Persisting events to a database (PostgreSQL or SQLite)
+    - Storing data organized by patient risk level (HIGH, MODERATE, LOW, MINIMAL)
+
+Architecture:
+    Edge (sensors) -> Fog (NEWS2 scoring) -> Cloud (this module, storage)
+
+Database Schema:
+    The 'events' table stores patient vital signs with their calculated
+    NEWS2 scores and risk classifications. Schema is auto-created at startup.
+
+Environment Variables:
+    CLOUD_DB_URL: PostgreSQL connection string (e.g., postgresql://user:pass@host:5432/db)
+    CLOUD_DB_PATH: SQLite file path (default: cloud_data.sqlite3), used if CLOUD_DB_URL not set
+
+Author: Mateus Roveda
+Master's Dissertation - ViSPAC Project
+"""
+
 from typing import List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body, Path
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-import sqlite3, json, os, logging
+import sqlite3, json, os, logging, time
 import uvicorn
 
 # Ensure logs directory exists
@@ -18,14 +43,12 @@ formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 file_handler.setFormatter(formatter)
 stream_handler.setFormatter(formatter)
 
-logging.basicConfig(level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+logging.basicConfig(
+    level=logging.INFO,
     handlers=[file_handler, stream_handler],
-    force=True)
+    force=True
+)
 log = logging.getLogger("vispac-cloud")
-log.setLevel(logging.INFO)
-log.addHandler(file_handler)
-log.addHandler(stream_handler)
 
 DB_PATH = os.environ.get("CLOUD_DB_PATH", "cloud_data.sqlite3")
 DB_URL = os.environ.get("CLOUD_DB_URL", "")
@@ -38,7 +61,7 @@ async def lifespan(app: FastAPI):
         conn.close()
         log.info("Database schema ensured at startup.")
     except Exception as e:
-    # Defensive logging; compose should wait for DB health, but just in case
+        # Defensive logging; compose should wait for DB health, but just in case
         log.error(f"Database init on startup failed: {e}")
     yield
     # No shutdown actions required
@@ -48,6 +71,28 @@ app = FastAPI(title="ViSPAC Cloud Ingest API", lifespan=lifespan)
 RISK_VALUES = {"high", "moderate", "low", "minimal"}
 
 class IngestItem(BaseModel):
+    """Pydantic model for incoming patient data from the fog layer.
+    
+    This model represents a single patient event with vital signs snapshot
+    and their calculated NEWS2 score.
+    
+    Attributes:
+        patient_id: Unique identifier for the patient.
+        signal: Type of signal being recorded ('hr' for heart rate, 'spo2' for oxygen saturation).
+        data: Compressed time-series data from the edge layer (SDT-compressed points).
+        forced_vitals: Additional vital signs that were forced/simulated for testing.
+        score: Calculated NEWS2 score (0-20 range, where higher = more critical).
+        risk: Risk classification based on NEWS2 (HIGH/MODERATE/LOW/MINIMAL).
+        hr: Heart rate in beats per minute (bpm).
+        spo2: Oxygen saturation percentage (SpO2).
+        rr: Respiratory rate in breaths per minute.
+        temp: Body temperature in Celsius.
+        sys_bp: Systolic blood pressure in mmHg.
+        on_o2: Whether the patient is receiving supplemental oxygen.
+        spo2_scale: SpO2 scoring scale (1 for standard, 2 for COPD patients).
+        consciousness: AVPU consciousness level (A=Alert, V=Voice, P=Pain, U=Unresponsive).
+    """
+    
     patient_id: str
     signal: str | None = None
     data: Any | None = None
@@ -66,6 +111,22 @@ class IngestItem(BaseModel):
 
 
 def get_conn():
+    """Create and return a database connection.
+    
+    Automatically detects whether to use PostgreSQL or SQLite based on
+    the CLOUD_DB_URL environment variable. Creates the 'events' table
+    if it doesn't exist.
+    
+    Returns:
+        Connection object (psycopg2 connection for PostgreSQL, 
+        sqlite3 connection for SQLite).
+    
+    Raises:
+        Exception: If database connection fails.
+    
+    Note:
+        The returned connection should be closed by the caller after use.
+    """
     if DB_URL.startswith("postgres"):
         import psycopg2
         conn = psycopg2.connect(DB_URL)
@@ -123,6 +184,7 @@ async def ingest_by_risk(
     risk: str = Path(..., description="Risk stream: high|moderate|low|minimal"),
     items: List[IngestItem] = Body(...),
 ):
+    start_time = time.time()
     r = risk.lower()
     if r not in RISK_VALUES:
         raise HTTPException(400, f"Invalid risk stream: {risk}")
@@ -198,6 +260,11 @@ async def ingest_by_risk(
         raise HTTPException(500, f"DB error: {e}")
 
     log.info(f"Successfully stored {len(items)} items to DB ({risk.upper()})")
+    
+    # Log structured metrics
+    duration_ms = (time.time() - start_time) * 1000
+    log.info(f"[CLOUD_METRICS] risk={r} items={len(items)} insert_ms={duration_ms:.2f}")
+    
     return {"accepted": len(items), "risk": r}
 
 
