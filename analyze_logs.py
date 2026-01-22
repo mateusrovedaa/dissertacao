@@ -98,6 +98,10 @@ class EdgeMetrics:
         return variance ** 0.5
     
     @property
+    def avg_cpu(self) -> float:
+        return sum(self.cpu_samples) / len(self.cpu_samples) if self.cpu_samples else 0.0
+    
+    @property
     def avg_memory(self) -> float:
         return sum(self.memory_samples) / len(self.memory_samples) if self.memory_samples else 0.0
 
@@ -395,7 +399,11 @@ class LogParser:
             list(directory.glob('edge-*_error.log')) + 
             list(directory.glob('edge-*_service.log')) +
             list(directory.glob('fog_*.log')) +
-            list(directory.glob('cloud_*.log'))
+            list(directory.glob('fog-*.log')) +
+            list(directory.glob('vispac-fog*.log')) +
+            list(directory.glob('cloud_*.log')) +
+            list(directory.glob('cloud-*.log')) +
+            list(directory.glob('vispac-cloud*.log'))
         )
         # Remove duplicates and keep unique files
         log_files = list(set(log_files))
@@ -608,6 +616,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             cloud_stats.append({
                 'scenario': s_name,
                 'total_items': c.total_items_stored,
+                'total_inserts': len(c.insert_timestamps),  # Real count, not subsampled
                 'avg_insert_ms': c.avg_insert_latency,
                 'timestamps': [t.isoformat() for t in c.insert_timestamps][::step_c],
                 # If we have latencies (new logs), use them. If not (legacy), use dummy 0
@@ -801,6 +810,48 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             font-size: 1em;
         }}
         
+        .comparison-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            font-size: 0.95em;
+        }}
+        
+        .comparison-table th,
+        .comparison-table td {{
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+        }}
+        
+        .comparison-table th {{
+            background: var(--bg-primary);
+            font-weight: 600;
+            color: var(--text-primary);
+        }}
+        
+        .comparison-table tbody tr:hover {{
+            background: rgba(0, 119, 182, 0.1);
+        }}
+        
+        .comparison-table td:not(:first-child) {{
+            text-align: right;
+        }}
+        
+        .comparison-table th:not(:first-child) {{
+            text-align: right;
+        }}
+        
+        .positive {{
+            color: #16a34a;
+            font-weight: 600;
+        }}
+        
+        .negative {{
+            color: #dc2626;
+            font-weight: 600;
+        }}
+        
         .generated-time {{
             text-align: center;
             color: var(--text-secondary);
@@ -899,32 +950,54 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
         {'<div class="card full-width"><h2>🔄 Evolução do Risco dos Pacientes (Cenário 3)</h2><div><label for="patientSelect">Selecione o Paciente:</label><select id="patientSelect" onchange="updateRiskChart()"></select></div><div class="chart-container" style="height: 400px;"><canvas id="riskEvolutionChart"></canvas></div></div>' if risk_histories else ''}
         
         <!-- Backoff/Collection Interval Evolution (Scenario 3 only) -->
-        {'<div class="card full-width"><h2>⏱️ Evolução do Intervalo de Coleta (Cenário 3)</h2><div><label for="backoffPatientSelect">Selecione o Paciente:</label><select id="backoffPatientSelect" onchange="updateBackoffChart()"></select></div><div class="chart-container" style="height: 400px;"><canvas id="backoffChart"></canvas></div></div>' if backoff_histories else ''}
+        {'<div class="card full-width"><h2>⏱️ Evolução do Intervalo de Coleta (Cenário 3)</h2><div style="display: flex; align-items: center; gap: 20px; margin-bottom: 15px;"><div><label for="backoffPatientSelect">Selecione o Paciente:</label><select id="backoffPatientSelect" onchange="updateBackoffCharts()"></select></div><div style="font-size: 0.85em; color: var(--text-secondary);"><span style="display: inline-block; width: 12px; height: 12px; background: #ff6b6b; border-radius: 50%; margin-right: 4px;"></span>HR <span style="display: inline-block; width: 12px; height: 12px; background: #4ecdc4; border-radius: 50%; margin-left: 12px; margin-right: 4px;"></span>SpO2 <span style="display: inline-block; width: 12px; height: 12px; background: #dc2626; border-radius: 3px; margin-left: 12px; margin-right: 4px;"></span>Reset</div></div><h3 style="font-size: 1em; color: var(--accent); margin-bottom: 5px;">❤️ Frequência Cardíaca (HR)</h3><div class="chart-container" style="height: 200px;"><canvas id="backoffChartHR"></canvas></div><h3 style="font-size: 1em; color: var(--accent); margin: 15px 0 5px 0;">🫁 Saturação de Oxigênio (SpO2)</h3><div class="chart-container" style="height: 200px;"><canvas id="backoffChartSpO2"></canvas></div></div>' if backoff_histories else ''}
         
-        <!-- Fog & Cloud Metrics -->
+        <!-- Fog & Cloud Comparison Tables -->
         <div class="card full-width">
-            <h2>☁️ Desempenho Fog & Cloud</h2>
-            <div class="chart-container" style="height: 400px;">
-                <canvas id="fogCloudChart"></canvas>
-            </div>
-            <div class="metrics-grid" style="margin-top: 20px;">
-                <div class="metric-card">
-                    <h3>Fog Process Latency</h3>
-                    <p id="fogLatencyVal">-</p>
-                </div>
-                <div class="metric-card">
-                    <h3>Fog Throughput</h3>
-                    <p id="fogThroughputVal">-</p>
-                </div>
-                <div class="metric-card">
-                    <h3>Cloud Throughput</h3>
-                    <p id="cloudThroughputVal">-</p>
-                </div>
-                <div class="metric-card">
-                    <h3>Cloud Stored</h3>
-                    <p id="cloudStoredVal">-</p>
-                </div>
-            </div>
+            <h2>☁️ Comparativo Fog & Cloud por Cenário</h2>
+            
+            <h3 style="margin-top: 20px; color: var(--accent);">📊 Métricas Fog</h3>
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Cenário</th>
+                        <th>Batches Processados</th>
+                        <th>Latência Processamento (ms)</th>
+                        <th>Latência Forward (ms)</th>
+                        <th>Throughput (batches/s)</th>
+                    </tr>
+                </thead>
+                <tbody id="fogTableBody">
+                </tbody>
+            </table>
+            
+            <h3 style="margin-top: 30px; color: var(--accent);">📊 Métricas Cloud</h3>
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Cenário</th>
+                        <th>Items Armazenados</th>
+                        <th>Operações INSERT</th>
+                        <th>Latência INSERT (ms)</th>
+                    </tr>
+                </thead>
+                <tbody id="cloudTableBody">
+                </tbody>
+            </table>
+            
+            <h3 style="margin-top: 30px; color: var(--accent);">📈 Economia vs Baseline</h3>
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Cenário</th>
+                        <th>Redução Batches Fog</th>
+                        <th>Redução Items Cloud</th>
+                        <th>Melhoria Latência Forward</th>
+                    </tr>
+                </thead>
+                <tbody id="savingsTableBody">
+                </tbody>
+            </table>
         </div>
     </div>
     
@@ -1162,16 +1235,16 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                                 display: true,
                                 text: 'Tempo da Simulação'
                             }},
-                            grid: {
+                            grid: {{
                                 color: 'rgba(0, 0, 0, 0.05)'
-                            }
+                            }}
                         }},
                         y: {{
                             beginAtZero: true,
                             max: 12,
-                            grid: {
+                            grid: {{
                                 color: 'rgba(0, 0, 0, 0.05)'
-                            },
+                            }},
                             title: {{
                                 display: true,
                                 text: 'Escore NEWS2'
@@ -1185,8 +1258,9 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             }});
         }}
         
-        // Backoff Chart Functions
-        let backoffChart = null;
+        // Backoff Chart Functions - Separate HR and SpO2 charts with reset inference
+        let backoffChartHR = null;
+        let backoffChartSpO2 = null;
         
         function initBackoffSelect() {{
             const select = document.getElementById('backoffPatientSelect');
@@ -1201,45 +1275,90 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             }});
             
             if (patients.length > 0) {{
-                updateBackoffChart();
+                updateBackoffCharts();
             }}
         }}
         
-        function updateBackoffChart() {{
-            const select = document.getElementById('backoffPatientSelect');
-            if (!select) return;
+        // Helper to get risk at a given time for a patient
+        function getRiskAtTime(patientId, timestamp) {{
+            const riskHistory = riskHistories[patientId];
+            if (!riskHistory) return 'MINIMAL';
             
-            const patientId = select.value;
-            const history = backoffHistories[patientId];
-            if (!history) return;
+            let risk = 'MINIMAL';
+            const targetTime = new Date(timestamp).getTime();
             
-            const ctx = document.getElementById('backoffChart');
+            for (let i = 0; i < riskHistory.timestamps.length; i++) {{
+                const t = new Date(riskHistory.timestamps[i]).getTime();
+                if (t <= targetTime) {{
+                    risk = riskHistory.risks[i];
+                }} else {{
+                    break;
+                }}
+            }}
+            return risk;
+        }}
+        
+        // Risk colors for chart
+        const RISK_COLORS = {{
+            'MINIMAL': 'rgba(0, 255, 136, 0.15)',
+            'LOW': 'rgba(0, 212, 255, 0.15)',
+            'MODERATE': 'rgba(255, 159, 28, 0.2)',
+            'HIGH': 'rgba(231, 29, 54, 0.2)'
+        }};
+        
+        function createSignalChart(canvasId, signalName, signalData, patientId, color) {{
+            const ctx = document.getElementById(canvasId);
+            if (!ctx) return null;
             
-            if (backoffChart) {{
-                backoffChart.destroy();
+            // Build data points including inferred resets
+            const dataPoints = [];
+            const resetPoints = [];
+            
+            for (let i = 0; i < signalData.length; i++) {{
+                const curr = signalData[i];
+                const currTime = new Date(curr.timestamp);
+                
+                // Check if this is a reset (old_interval < previous new_interval)
+                if (i > 0) {{
+                    const prev = signalData[i - 1];
+                    if (curr.oldInterval < prev.newInterval) {{
+                        // Infer reset happened - add reset point
+                        const resetTime = new Date((new Date(prev.timestamp).getTime() + currTime.getTime()) / 2);
+                        resetPoints.push({{
+                            x: resetTime,
+                            y: curr.oldInterval,
+                            isReset: true,
+                            risk: getRiskAtTime(patientId, resetTime)
+                        }});
+                    }}
+                }}
+                
+                // Add current backoff point
+                dataPoints.push({{
+                    x: currTime,
+                    y: curr.newInterval,
+                    oldInterval: curr.oldInterval,
+                    isReset: false,
+                    risk: getRiskAtTime(patientId, currTime)
+                }});
             }}
             
-            // Prepare data - show new interval over time, color by signal type
-            const dataPoints = history.timestamps.map((ts, i) => ({{
-                x: new Date(ts),
-                y: history.new_intervals[i],
-                signal: history.signals[i],
-                oldInterval: history.old_intervals[i]
-            }}));
+            // Merge and sort all points
+            const allPoints = [...resetPoints, ...dataPoints].sort((a, b) => a.x - b.x);
             
-            backoffChart = new Chart(ctx, {{
+            return new Chart(ctx, {{
                 type: 'line',
                 data: {{
                     datasets: [{{
-                        label: 'Intervalo de Coleta (s)',
-                        data: dataPoints,
-                        borderColor: '#00d4ff',
-                        backgroundColor: 'rgba(0, 212, 255, 0.1)',
+                        label: signalName,
+                        data: allPoints,
+                        borderColor: color,
+                        backgroundColor: color.replace(')', ', 0.1)').replace('rgb', 'rgba'),
                         fill: true,
-                        tension: 0.3,
                         stepped: 'before',
-                        pointRadius: 6,
-                        pointBackgroundColor: dataPoints.map(p => p.signal === 'HR' ? '#ff6b6b' : '#4ecdc4'),
+                        pointRadius: allPoints.map(p => p.isReset ? 8 : 5),
+                        pointStyle: allPoints.map(p => p.isReset ? 'rectRot' : 'circle'),
+                        pointBackgroundColor: allPoints.map(p => p.isReset ? '#dc2626' : color),
                         pointBorderColor: '#fff',
                         pointBorderWidth: 2
                     }}]
@@ -1248,18 +1367,15 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {{
-                        title: {{
-                            display: true,
-                            text: `Evolução do Intervalo de Coleta - ${{patientId}}`,
-                            color: '#333333',
-                            font: {{ size: 16 }}
-                        }},
                         legend: {{ display: false }},
                         tooltip: {{
                             callbacks: {{
                                 label: function(context) {{
-                                    const point = context.raw;
-                                    return `${{point.signal}}: ${{point.oldInterval}}s → ${{point.y}}s`;
+                                    const p = context.raw;
+                                    if (p.isReset) {{
+                                        return `⬇ RESET para ${{p.y}}s (Risco: ${{p.risk}})`;
+                                    }}
+                                    return `${{p.oldInterval}}s → ${{p.y}}s (Risco: ${{p.risk}})`;
                                 }}
                             }}
                         }}
@@ -1267,138 +1383,141 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                     scales: {{
                         x: {{
                             type: 'time',
-                            time: {{
-                                displayFormats: {{
-                                    hour: 'HH:mm'
-                                }}
-                            }},
-                            title: {{
-                                display: true,
-                                text: 'Tempo da Simulação'
-                            }},
-                            grid: {
-                                color: 'rgba(0, 0, 0, 0.05)'
-                            }
+                            time: {{ displayFormats: {{ hour: 'HH:mm' }} }},
+                            title: {{ display: false }},
+                            grid: {{ color: 'rgba(0, 0, 0, 0.05)' }}
                         }},
                         y: {{
                             beginAtZero: true,
-                            grid: {
-                                color: 'rgba(0, 0, 0, 0.05)'
-                            },
-                            title: {{
-                                display: true,
-                                text: 'Intervalo de Coleta (segundos)'
-                            }}
+                            grid: {{ color: 'rgba(0, 0, 0, 0.05)' }},
+                            title: {{ display: true, text: 'Intervalo (s)' }}
                         }}
                     }}
                 }}
             }});
         }}
         
+        function updateBackoffCharts() {{
+            const select = document.getElementById('backoffPatientSelect');
+            if (!select) return;
+            
+            const patientId = select.value;
+            const history = backoffHistories[patientId];
+            if (!history) return;
+            
+            // Destroy existing charts
+            if (backoffChartHR) {{ backoffChartHR.destroy(); backoffChartHR = null; }}
+            if (backoffChartSpO2) {{ backoffChartSpO2.destroy(); backoffChartSpO2 = null; }}
+            
+            // Separate data by signal type
+            const hrData = [];
+            const spo2Data = [];
+            
+            for (let i = 0; i < history.timestamps.length; i++) {{
+                const entry = {{
+                    timestamp: history.timestamps[i],
+                    oldInterval: history.old_intervals[i],
+                    newInterval: history.new_intervals[i]
+                }};
+                
+                if (history.signals[i] === 'HR') {{
+                    hrData.push(entry);
+                }} else {{
+                    spo2Data.push(entry);
+                }}
+            }}
+            
+            // Create charts
+            if (hrData.length > 0) {{
+                backoffChartHR = createSignalChart('backoffChartHR', 'HR', hrData, patientId, '#ff6b6b');
+            }}
+            if (spo2Data.length > 0) {{
+                backoffChartSpO2 = createSignalChart('backoffChartSpO2', 'SpO2', spo2Data, patientId, '#4ecdc4');
+            }}
+        }}
+        
         // Initialize
         initRiskSelect();
         initBackoffSelect();
-        initFogCloudChart();
+        initFogCloudTables();
         
-        function initFogCloudChart() {{
-            const ctx = document.getElementById('fogCloudChart');
-            if (!ctx) return;
+        function initFogCloudTables() {{
+            const fogTableBody = document.getElementById('fogTableBody');
+            const cloudTableBody = document.getElementById('cloudTableBody');
+            const savingsTableBody = document.getElementById('savingsTableBody');
             
-            // Find vispac scenario data (usually index 2, but check)
-            const idx = scenarios.findIndex(s => s.includes('vispac'));
-            if (idx === -1) return;
+            if (!fogTableBody || !cloudTableBody) return;
             
-            const fog = fogStats[idx];
-            const cloud = cloudStats[idx];
+            // Baseline for comparison (first scenario)
+            const baselineFog = fogStats[0];
+            const baselineCloud = cloudStats[0];
             
-            // Update summary cards
-            document.getElementById('fogLatencyVal').textContent = fog.avg_process_ms > 0 ? fog.avg_process_ms.toFixed(2) + ' ms' : 'N/A';
-            document.getElementById('fogThroughputVal').textContent = fog.total_batches + ' batches';
-            document.getElementById('cloudStoredVal').textContent = cloud.total_items + ' items';
-            
-            // Determine start/end times to calculate rough throughput
-            if (fog.timestamps && fog.timestamps.length > 1) {{
-                 const start = new Date(fog.timestamps[0]);
-                 const end = new Date(fog.timestamps[fog.timestamps.length-1]);
-                 const seconds = (end - start) / 1000;
-                 if (seconds > 0) {{
-                     const tput = fog.total_batches / seconds;
-                     document.getElementById('fogThroughputVal').textContent += ` (${{tput.toFixed(2)}}/s)`;
-                 }}
-            }}
-            
-            // Prepare datasets
-            const datasets = [];
-            
-            // Fog Processing Latency (if available)
-            if (fog.timestamps && fog.latencies && fog.latencies.some(l => l > 0)) {{
-                datasets.push({{
-                    label: 'Fog: Latência de Processamento (ms)',
-                    data: fog.timestamps.map((t, i) => ({{ x: t, y: fog.latencies[i] }})),
-                    borderColor: '#ffaa00',
-                    backgroundColor: 'rgba(255, 170, 0, 0.1)',
-                    yAxisID: 'yLatency',
-                    pointRadius: 2
-                }});
-            }}
-            
-            // Cloud Items Stored (Cumulative)
-            // If we have timestamps for cloud, show accumulation
-            if (cloud.timestamps && cloud.timestamps.length > 0) {{
-                // Create cumulative count
-                let count = 0;
-                const cumulative = cloud.timestamps.map((t, i) => {{
-                    // Estimate items per batch mostly 1 for legacy, or look at logic
-                    // Cloud legacy logs: "Stored X items". We summed total.
-                    // For chart, let's assume linear accumulation or just plot events
-                    // Actually, if we scraped "stored X items", we can sum X.
-                    // Ideally we parsed X per line. LogParser stores total.
-                    // But we captured timestamps. Let's assume each timestamp = 1 event (batch).
-                    // CloudMetrics.total_items_stored is sum of items.
-                    // But our parser logic: `self.cloud_metrics.insert_latencies.append` happens once per log line.
-                    // So timestamps match log lines.
-                    count += (cloud.total_items / cloud.timestamps.length); // rough approx per line
-                    return {{ x: t, y: count }};
-                }});
-                
-                datasets.push({{
-                    label: 'Cloud: Itens Armazenados (Acumulado)',
-                    data: cumulative,
-                    borderColor: '#00ff88',
-                    backgroundColor: 'rgba(0, 255, 136, 0.1)',
-                    yAxisID: 'yCount',
-                    fill: true,
-                    pointRadius: 0
-                }});
-            }}
-
-            new Chart(ctx, {{
-                type: 'line',
-                data: {{ datasets: datasets }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: {{
-                        mode: 'index',
-                        intersect: false,
-                    }},
-                    scales: {{
-                        x: {{ type: 'time', time: {{ unit: 'minute' }} }},
-                        yLatency: {{
-                            type: 'linear',
-                            display: datasets.some(d => d.yAxisID === 'yLatency'),
-                            position: 'left',
-                            title: {{ display: true, text: 'Latência (ms)' }}
-                        }},
-                        yCount: {{
-                            type: 'linear',
-                            display: true,
-                            position: 'right',
-                            title: {{ display: true, text: 'Total Itens' }},
-                            grid: {{ drawOnChartArea: false }}
-                        }}
-                    }}
+            // Populate Fog table
+            fogStats.forEach((fog, idx) => {{
+                // Calculate throughput
+                let throughput = 0;
+                if (fog.timestamps && fog.timestamps.length > 1) {{
+                    const start = new Date(fog.timestamps[0]);
+                    const end = new Date(fog.timestamps[fog.timestamps.length - 1]);
+                    const seconds = (end - start) / 1000;
+                    if (seconds > 0) throughput = fog.total_batches / seconds;
                 }}
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${{scenarioNames[idx].replace('scenario', 'Cenário ').replace('_', ' - ')}}</td>
+                    <td>${{fog.total_batches.toLocaleString('pt-BR')}}</td>
+                    <td>${{fog.avg_process_ms.toFixed(2)}}</td>
+                    <td>${{fog.avg_forward_ms.toFixed(2)}}</td>
+                    <td>${{throughput.toFixed(2)}}</td>
+                `;
+                fogTableBody.appendChild(row);
+            }});
+            
+            // Populate Cloud table
+            cloudStats.forEach((cloud, idx) => {{
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${{scenarioNames[idx].replace('scenario', 'Cenário ').replace('_', ' - ')}}</td>
+                    <td>${{cloud.total_items.toLocaleString('pt-BR')}}</td>
+                    <td>${{cloud.total_inserts ? cloud.total_inserts.toLocaleString('pt-BR') : 'N/A'}}</td>
+                    <td>${{cloud.avg_insert_ms.toFixed(2)}}</td>
+                `;
+                cloudTableBody.appendChild(row);
+            }});
+            
+            // Populate Savings table (include baseline as reference)
+            fogStats.forEach((fog, idx) => {{
+                const cloud = cloudStats[idx];
+                
+                let batchReduction, itemReduction, latencyImprv;
+                
+                if (idx === 0) {{
+                    // Baseline - reference values
+                    batchReduction = '0.0';
+                    itemReduction = '0.0';
+                    latencyImprv = '0.0';
+                }} else {{
+                    batchReduction = baselineFog.total_batches > 0 
+                        ? ((1 - fog.total_batches / baselineFog.total_batches) * 100).toFixed(1) 
+                        : 'N/A';
+                    itemReduction = baselineCloud.total_items > 0 
+                        ? ((1 - cloud.total_items / baselineCloud.total_items) * 100).toFixed(1) 
+                        : 'N/A';
+                    latencyImprv = baselineFog.avg_forward_ms > 0 
+                        ? ((1 - fog.avg_forward_ms / baselineFog.avg_forward_ms) * 100).toFixed(1) 
+                        : 'N/A';
+                }}
+                
+                const row = document.createElement('tr');
+                const isBaseline = idx === 0;
+                row.innerHTML = `
+                    <td>${{scenarioNames[idx].replace('scenario', 'Cenário ').replace('_', ' - ')}}${{isBaseline ? ' (Referência)' : ''}}</td>
+                    <td class="${{parseFloat(batchReduction) > 0 ? 'positive' : (parseFloat(batchReduction) === 0 ? '' : 'negative')}}">${{batchReduction}}%</td>
+                    <td class="${{parseFloat(itemReduction) > 0 ? 'positive' : (parseFloat(itemReduction) === 0 ? '' : 'negative')}}">${{itemReduction}}%</td>
+                    <td class="${{parseFloat(latencyImprv) > 0 ? 'positive' : (parseFloat(latencyImprv) === 0 ? '' : 'negative')}}">${{latencyImprv}}%</td>
+                `;
+                savingsTableBody.appendChild(row);
             }});
         }}
     </script>
