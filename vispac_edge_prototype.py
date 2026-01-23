@@ -745,16 +745,21 @@ class Patient:
         self.news2=score
         self.risk=('HIGH' if score>=7 else 'MODERATE' if score>=5 else 'LOW' if score>=1 else 'MINIMAL')
         
+        # Check if risk actually changed
+        risk_changed = (self.risk != old)
+        
         # Log risk changes
-        if self.risk!=old:
+        if risk_changed:
             mode = "DYNAMIC" if scenario_cfg["dynamic_adaptation"] else "STATIC"
             log.info(f"[RISK] {self.id}: {old} → {self.risk} (NEWS2={score}) [{mode}]")
         
         # Set interval parameters based on scenario configuration
+        # ONLY reset intervals if risk changed (to preserve backoff progress)
         if not scenario_cfg["use_risk_based_intervals"]:
             # Scenario 1 & 2: Fixed intervals for ALL patients (no risk-based variation)
-            fixed_interval = scenario_cfg["fixed_collection_interval"]
-            self.ic_fc, self.ic_spo2 = fixed_interval, fixed_interval
+            if risk_changed or old == 'N/A':
+                fixed_interval = scenario_cfg["fixed_collection_interval"]
+                self.ic_fc, self.ic_spo2 = fixed_interval, fixed_interval
             p = PARAMS["MINIMAL"]  # Use default params for backoff thresholds
             self.eps_fc, self.eps_spo2 = p['eps_fc'], p['eps_spo2']
             self.dc_fc, self.dc_spo2 = p['dc_fc'], p['dc_spo2']
@@ -764,7 +769,12 @@ class Patient:
         else:
             # Scenario 2 & 3: Use risk-based intervals from PARAMS
             p = PARAMS[self.risk]
-            self.ic_fc, self.ic_spo2 = p['ic_fc'], p['ic_spo2']
+            # Only reset intervals if risk changed (preserve backoff progress)
+            if risk_changed or old == 'N/A':
+                self.ic_fc, self.ic_spo2 = p['ic_fc'], p['ic_spo2']
+                # Reset stable counters when risk changes
+                self.stable_fc = 0
+                self.stable_spo2 = 0
             self.eps_fc, self.eps_spo2 = p['eps_fc'], p['eps_spo2']
             self.dc_fc, self.dc_spo2 = p['dc_fc'], p['dc_spo2']
             self.t_sdt, self.ic_max = p['t_sdt'], p['ic_max']
@@ -779,13 +789,21 @@ class Patient:
         # For high_risk dataset: non-persistent patients should stay MODERATE or HIGH (never LOW/MINIMAL)
         elif self.dataset_type == "high_risk" and not self.persistent_high_risk and score<5:
             score=5  # Minimum MODERATE risk for variable patients
-        old=getattr(self,'risk','N/A')
-        self.news2=score
-        self.risk=('HIGH' if score>=7 else 'MODERATE' if score>=5 else 'LOW' if score>=1 else 'MINIMAL')
-        if self.risk!=old:
-            log.info(f"[RISK] {self.id}: {old} → {self.risk} (NEWS2={score})")
+        
+        # Recalculate risk after adjustments
+        new_risk=('HIGH' if score>=7 else 'MODERATE' if score>=5 else 'LOW' if score>=1 else 'MINIMAL')
+        if new_risk != self.risk:
+            log.info(f"[RISK] {self.id}: {self.risk} → {new_risk} (NEWS2={score}) [ADJUSTED]")
+            self.risk = new_risk
+            self.news2 = score
+            # Reset intervals for the new risk level
+            p=PARAMS[self.risk]
+            self.ic_fc,self.ic_spo2=p['ic_fc'],p['ic_spo2']
+            self.stable_fc = 0
+            self.stable_spo2 = 0
+        
+        # Update other params (these don't affect backoff progress)
         p=PARAMS[self.risk]
-        self.ic_fc,self.ic_spo2=p['ic_fc'],p['ic_spo2']
         self.eps_fc,self.eps_spo2=p['eps_fc'],p['eps_spo2']
         self.dc_fc,self.dc_spo2=p['dc_fc'],p['dc_spo2']
         self.t_sdt,self.ic_max=p['t_sdt'],p['ic_max']
