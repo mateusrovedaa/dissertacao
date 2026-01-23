@@ -64,8 +64,11 @@ class EdgeMetrics:
     total_compressed_bytes: int = 0
     compression_ratios: List[float] = field(default_factory=list)
     prd_values: List[float] = field(default_factory=list)
+    prd_by_risk: Dict[str, List[float]] = field(default_factory=lambda: {'HIGH': [], 'MODERATE': [], 'LOW': [], 'MINIMAL': []})
     latencies: List[float] = field(default_factory=list)
     risk_distribution: Dict[str, int] = field(default_factory=dict)
+    # Track current risk per patient for PRD correlation
+    current_patient_risk: Dict[str, str] = field(default_factory=dict)
     risk_events: List[RiskChangeEvent] = field(default_factory=list)
     # Patient-level risk history: patient_id -> [(timestamp, risk, news2_score)]
     patient_risk_history: Dict[str, List[Tuple[datetime, str, int]]] = field(default_factory=dict)
@@ -300,6 +303,8 @@ class LogParser:
             metrics.total_compressed_bytes += int(compressed_size)
             metrics.compression_ratios.append(float(ratio))
             metrics.risk_distribution[risk] = metrics.risk_distribution.get(risk, 0) + 1
+            # Update current risk for PRD correlation (important for Static scenario)
+            metrics.current_patient_risk[patient_id] = risk
             return
         
         # Try to match raw collection (scenario 1)
@@ -310,13 +315,20 @@ class LogParser:
             metrics.total_raw_bytes += int(raw_size)
             metrics.total_compressed_bytes += int(raw_size)  # No compression
             metrics.risk_distribution[risk] = metrics.risk_distribution.get(risk, 0) + 1
+            # Update current risk for PRD correlation
+            metrics.current_patient_risk[patient_id] = risk
             return
         
         # Try to match PRD
         match = self.PATTERNS['prd'].search(line)
         if match:
             signal, patient_id, prd = match.groups()
-            metrics.prd_values.append(float(prd))
+            prd_value = float(prd)
+            metrics.prd_values.append(prd_value)
+            # Categorize PRD by patient's current risk level
+            current_risk = metrics.current_patient_risk.get(patient_id, 'MINIMAL')
+            if current_risk in metrics.prd_by_risk:
+                metrics.prd_by_risk[current_risk].append(prd_value)
             return
         
         # Try to match send latency and scores
@@ -364,6 +376,8 @@ class LogParser:
             metrics.patient_risk_history[patient_id].append(
                 (event.timestamp, new_risk, event.news2_score)
             )
+            # Update current risk for PRD correlation
+            metrics.current_patient_risk[patient_id] = new_risk
             return
         
         # Try to match resource metrics
@@ -426,6 +440,7 @@ class LogParser:
         all_latency = []
         all_cpu = []
         all_memory = []
+        all_prd_by_risk = {'HIGH': [], 'MODERATE': [], 'LOW': [], 'MINIMAL': []}
         total_raw = 0
         total_compressed = 0
         total_transmissions = 0
@@ -441,6 +456,9 @@ class LogParser:
             total_compressed += m.total_compressed_bytes
             total_transmissions += m.total_transmissions
             total_risk_events += len(m.risk_events)
+            # Aggregate PRD by risk
+            for risk_level in ['HIGH', 'MODERATE', 'LOW', 'MINIMAL']:
+                all_prd_by_risk[risk_level].extend(m.prd_by_risk.get(risk_level, []))
         
         def safe_avg(lst):
             return sum(lst) / len(lst) if lst else 0.0
@@ -478,6 +496,20 @@ class LogParser:
             'max_cpu': safe_max(all_cpu),
             'avg_memory': safe_avg(all_memory),
             'max_memory': safe_max(all_memory),
+            # PRD by risk level
+            'prd_by_risk': {
+                'HIGH': safe_avg(all_prd_by_risk.get('HIGH', [])),
+                'MODERATE': safe_avg(all_prd_by_risk.get('MODERATE', [])),
+                'LOW': safe_avg(all_prd_by_risk.get('LOW', [])),
+                'MINIMAL': safe_avg(all_prd_by_risk.get('MINIMAL', [])),
+            },
+            # Count of PRD samples per risk level (to understand distribution)
+            'prd_count_by_risk': {
+                'HIGH': len(all_prd_by_risk.get('HIGH', [])),
+                'MODERATE': len(all_prd_by_risk.get('MODERATE', [])),
+                'LOW': len(all_prd_by_risk.get('LOW', [])),
+                'MINIMAL': len(all_prd_by_risk.get('MINIMAL', [])),
+            },
         }
     
     def get_all_risk_histories(self) -> Dict[str, Dict[str, List]]:
@@ -637,6 +669,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
     <title>VISPAC - Dashboard de Resultados</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
     <style>
         :root {{
             --bg-primary: #f0f2f5;
@@ -899,6 +932,22 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                         {''.join(f'<td>{s["avg_prd"]:.4f}%</td>' for s in summaries)}
                     </tr>
                     <tr>
+                        <td style="padding-left: 20px; font-size: 0.9em; color: #ff4444;">↳ PRD Risco Alto (%)</td>
+                        {''.join(f'<td>{s.get("prd_by_risk", {}).get("HIGH", 0):.4f}% <span style="opacity:0.6">(n={s.get("prd_count_by_risk", {}).get("HIGH", 0):,})</span></td>' for s in summaries)}
+                    </tr>
+                    <tr>
+                        <td style="padding-left: 20px; font-size: 0.9em; color: #ffaa00;">↳ PRD Risco Moderado (%)</td>
+                        {''.join(f'<td>{s.get("prd_by_risk", {}).get("MODERATE", 0):.4f}% <span style="opacity:0.6">(n={s.get("prd_count_by_risk", {}).get("MODERATE", 0):,})</span></td>' for s in summaries)}
+                    </tr>
+                    <tr>
+                        <td style="padding-left: 20px; font-size: 0.9em; color: #00d4ff;">↳ PRD Risco Baixo (%)</td>
+                        {''.join(f'<td>{s.get("prd_by_risk", {}).get("LOW", 0):.4f}% <span style="opacity:0.6">(n={s.get("prd_count_by_risk", {}).get("LOW", 0):,})</span></td>' for s in summaries)}
+                    </tr>
+                    <tr>
+                        <td style="padding-left: 20px; font-size: 0.9em; color: #00ff88;">↳ PRD Risco Mínimo (%)</td>
+                        {''.join(f'<td>{s.get("prd_by_risk", {}).get("MINIMAL", 0):.4f}% <span style="opacity:0.6">(n={s.get("prd_count_by_risk", {}).get("MINIMAL", 0):,})</span></td>' for s in summaries)}
+                    </tr>
+                    <tr>
                         <td>Latência Média (ms)</td>
                         {''.join(f'<td>{s["avg_latency"]:.1f} ± {s["std_latency"]:.1f}</td>' for s in summaries)}
                     </tr>
@@ -938,11 +987,19 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             </div>
         </div>
         
-        <!-- Resource Usage Chart -->
+        <!-- CPU Usage Chart -->
         <div class="card">
-            <h2>💻 Uso de Recursos</h2>
+            <h2>🖥️ Uso de CPU</h2>
             <div class="chart-container">
-                <canvas id="resourceChart"></canvas>
+                <canvas id="cpuChart"></canvas>
+            </div>
+        </div>
+        
+        <!-- Memory Usage Chart -->
+        <div class="card">
+            <h2>💾 Uso de Memória</h2>
+            <div class="chart-container">
+                <canvas id="memoryChart"></canvas>
             </div>
         </div>
         
@@ -1048,11 +1105,24 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                     borderRadius: 5
                 }}]
             }},
+            plugins: [ChartDataLabels],
             options: {{
+                layout: {{
+                    padding: {{
+                        top: 30
+                    }}
+                }},
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {{
-                    legend: {{ display: false }}
+                    legend: {{ display: false }},
+                    datalabels: {{
+                        color: '#333',
+                        anchor: 'end',
+                        align: 'top',
+                        font: {{ weight: 'bold', size: 12 }},
+                        formatter: (value) => value.toFixed(1) + '%'
+                    }}
                 }},
                 scales: {{
                     y: {{
@@ -1075,11 +1145,24 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                     borderRadius: 5
                 }}]
             }},
+            plugins: [ChartDataLabels],
             options: {{
+                layout: {{
+                    padding: {{
+                        top: 30
+                    }}
+                }},
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {{
-                    legend: {{ display: false }}
+                    legend: {{ display: false }},
+                    datalabels: {{
+                        color: '#333',
+                        anchor: 'end',
+                        align: 'top',
+                        font: {{ weight: 'bold', size: 12 }},
+                        formatter: (value) => value.toFixed(0) + ' ms'
+                    }}
                 }},
                 scales: {{
                     y: {{
@@ -1101,11 +1184,24 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                     borderRadius: 5
                 }}]
             }},
+            plugins: [ChartDataLabels],
             options: {{
+                layout: {{
+                    padding: {{
+                        top: 30
+                    }}
+                }},
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {{
-                    legend: {{ display: false }}
+                    legend: {{ display: false }},
+                    datalabels: {{
+                        color: '#333',
+                        anchor: 'end',
+                        align: 'top',
+                        font: {{ weight: 'bold', size: 12 }},
+                        formatter: (value) => value.toFixed(2) + '%'
+                    }}
                 }},
                 scales: {{
                     y: {{
@@ -1115,32 +1211,87 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             }}
         }});
         
-        // Resource Chart
-        new Chart(document.getElementById('resourceChart'), {{
+        // CPU Chart
+        new Chart(document.getElementById('cpuChart'), {{
             type: 'bar',
             data: {{
                 labels: scenarioNames,
-                datasets: [
-                    {{
-                        label: 'CPU (%)',
-                        data: cpuData,
-                        backgroundColor: '#ff6b6b',
-                        borderRadius: 5
-                    }},
-                    {{
-                        label: 'Memória (MB)',
-                        data: memoryData,
-                        backgroundColor: '#4ecdc4',
-                        borderRadius: 5
-                    }}
-                ]
+                datasets: [{{
+                    label: 'CPU (%)',
+                    data: cpuData,
+                    backgroundColor: ['#ff6b6b', '#ff8e8e', '#ffb0b0'],
+                    borderRadius: 5
+                }}]
             }},
+            plugins: [ChartDataLabels],
             options: {{
+                layout: {{
+                    padding: {{
+                        top: 30
+                    }}
+                }},
                 responsive: true,
                 maintainAspectRatio: false,
+                plugins: {{
+                    legend: {{ display: false }},
+                    datalabels: {{
+                        color: '#333',
+                        anchor: 'end',
+                        align: 'top',
+                        font: {{ weight: 'bold', size: 12 }},
+                        formatter: (value) => value.toFixed(2) + '%'
+                    }}
+                }},
                 scales: {{
                     y: {{
-                        beginAtZero: true
+                        beginAtZero: true,
+                        title: {{
+                            display: true,
+                            text: 'CPU (%)'
+                        }}
+                    }}
+                }}
+            }}
+        }});
+        
+        // Memory Chart
+        new Chart(document.getElementById('memoryChart'), {{
+            type: 'bar',
+            data: {{
+                labels: scenarioNames,
+                datasets: [{{
+                    label: 'Memória (MB)',
+                    data: memoryData,
+                    backgroundColor: ['#4ecdc4', '#6ee0d8', '#8ef3ec'],
+                    borderRadius: 5
+                }}]
+            }},
+            plugins: [ChartDataLabels],
+            options: {{
+                layout: {{
+                    padding: {{
+                        top: 30
+                    }}
+                }},
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {{
+                    legend: {{ display: false }},
+                    datalabels: {{
+                        color: '#333',
+                        anchor: 'end',
+                        align: 'top',
+                        font: {{ weight: 'bold', size: 12 }},
+                        formatter: (value) => value.toFixed(1) + ' MB'
+                    }}
+                }},
+                scales: {{
+                    y: {{
+                        beginAtZero: true,
+                        title: {{
+                            display: true,
+                            text: 'Memória (MB)'
+                        }}
                     }}
                 }}
             }}

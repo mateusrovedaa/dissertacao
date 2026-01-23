@@ -1,37 +1,50 @@
-# ViSPAC edge/fog/cloud prototype
+# ViSPAC - Vital Sign Prioritization and Adaptive Compression
 
-This repository prototypes an edge→fog→cloud flow for time-series vitals compression, scoring (NEWS2) and storage.
+Repositório do protótipo Edge-Fog-Cloud para compressão adaptativa e priorização inteligente no monitoramento de sinais vitais de pacientes.
 
-## Components
+## Visão Geral
 
-- edge: `vispac_edge_prototype.py` — simulator that collects samples, applies SDT and lossless, and sends batches to fog.
-- fog: `news2_api.py` — FastAPI service (port 8000) that decompresses batches, computes NEWS2, returns scores to edge and forwards risk-based streams to cloud.
-- cloud: `cloud_api.py` — FastAPI service (port 9000) that receives risk-specific streams and persists them to a DB (PostgreSQL via `CLOUD_DB_URL`, else SQLite via `CLOUD_DB_PATH`).
-- mqtt: Eclipse Mosquitto broker used when running in MQTT mode.
+O ViSPAC é um modelo que combina compressão de dados (SDT + Huffman/LZW) com priorização clínica baseada no escore NEWS2 em uma arquitetura distribuída de três camadas:
+
+- **Edge**: Coleta sinais vitais, aplica compressão adaptativa e transmite para a Fog
+- **Fog**: Calcula o escore NEWS2, envia callbacks de risco para a Edge e encaminha dados para a Cloud
+- **Cloud**: Armazena dados e disponibiliza dashboards de visualização
+
+## Componentes
+
+| Componente | Arquivo | Descrição |
+|------------|---------|-----------|
+| Edge | `vispac_edge_prototype.py` | Simulador que coleta amostras, aplica SDT e compressão lossless, implementa back-off exponencial e vigilância contínua |
+| Fog | `news2_api.py` | API FastAPI (porta 8000) que descomprime batches, calcula NEWS2, retorna scores à Edge e encaminha streams para Cloud |
+| Cloud | `cloud_api.py` | API FastAPI (porta 9000) que recebe streams por nível de risco e persiste em PostgreSQL/SQLite |
+| MQTT | Eclipse Mosquitto | Broker MQTT para comunicação Edge-Fog |
+| Análise | `analyze_logs.py` | Script para análise de logs e geração de dashboard HTML interativo |
+
+## Estrutura do Projeto
+
+```
+dissertacao/
+├── vispac_edge_prototype.py  # Simulador Edge com 3 cenários
+├── news2_api.py              # API Fog (NEWS2 + callbacks)
+├── cloud_api.py              # API Cloud (armazenamento)
+├── compressors.py            # Algoritmos SDT, Huffman, LZW
+├── analyze_logs.py           # Análise de logs + Dashboard HTML
+├── terraform/                # Infraestrutura AWS (20 Edges + Fog + Cloud)
+├── results/                  # Dashboards e CSVs gerados
+├── logs/                     # Logs dos experimentos
+└── datasets/                 # Dados de pacientes (BIDMC, Student Health)
+```
 
 ## Datasets
 
-This project supports two types of datasets for patient simulation:
+O projeto suporta dois tipos de datasets para simulação:
 
-- **Low Risk**: Healthy students data from Kaggle (~600 samples, 7 virtual patients)
-- **High Risk**: ICU patients from PhysioNet BIDMC (~25,000 samples, 53 real patients)
+- **Low Risk**: Dados de estudantes saudáveis do Kaggle (~600 amostras, 7 pacientes virtuais)
+- **High Risk**: Pacientes de UTI do PhysioNet BIDMC (~25.000 amostras, 53 pacientes reais)
 
-**For detailed information about datasets, see [DATASETS.md](DATASETS.md)**
+Para detalhes completos, veja [DATASETS.md](DATASETS.md).
 
-Quick start:
-```bash
-# Download high-risk dataset
-python download_bidmc_data.py
-
-# Run simulation with high-risk data
-export DATASET_TYPE=high_risk
-python vispac_edge_prototype.py
-
-# Or use the interactive menu
-python run_simulation.py
-```
-
-## Dependencies
+## Instalação
 
 ```bash
 python3 -m venv .venv
@@ -39,112 +52,145 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run (HTTP mode)
+## Execução Local
+
+### Modo HTTP
 
 ```bash
-# start cloud (port 9000)
+# Iniciar Cloud (porta 9000)
 python cloud_api.py &
-# start fog (port 8000)
+
+# Iniciar Fog (porta 8000)
 python news2_api.py &
-# run edge simulator
+
+# Executar simulador Edge
 python vispac_edge_prototype.py
 ```
 
-## Run (MQTT mode)
+### Modo MQTT
 
 ```bash
-# install a local MQTT broker (example: mosquitto)
-# sudo apt install mosquitto
-# mosquitto -v
+# Instalar broker MQTT (ex: mosquitto)
+# sudo apt install mosquitto && mosquitto -v
 
-# enable MQTT in the edge simulator
+# Configurar variáveis de ambiente
 export EDGE_USE_MQTT=1
-# optional: set broker and port
 export MQTT_BROKER=127.0.0.1
 export MQTT_PORT=1883
 
-# start cloud and fog
+# Iniciar serviços
 python cloud_api.py &
 python news2_api.py &
-
-# run edge simulator (will publish batches to MQTT topic 'vispac/upload_batch')
 python vispac_edge_prototype.py
 ```
 
-## Configuration
-
-- `CLOUD_BASE_URL` (env) — where fog forwards risk streams (default `http://127.0.0.1:9000`).
-- `CLOUD_DB_URL` (env) — PostgreSQL connection string for cloud (e.g., `postgresql://user:pass@host:5432/dbname`).
-- `CLOUD_DB_PATH` (env) — SQLite file used by cloud if `CLOUD_DB_URL` is not set (default `cloud_data.sqlite3`).
-- `EDGE_USE_MQTT`, `MQTT_BROKER`, `MQTT_PORT` — configure MQTT behaviour.
-- `DATASET_TYPE` (env) — choose dataset: `low_risk` or `high_risk` (see [DATASETS.md](DATASETS.md)).
-
-## Run with Docker Compose (PostgreSQL + MQTT)
+### Docker Compose
 
 ```bash
-# build images and start services (db, cloud, fog, edge)
+# Build e start (PostgreSQL + MQTT + serviços)
 docker compose up --build
 
-# logs
+# Logs
 docker compose logs -f
 
-# stop
+# Stop
 docker compose down -v
 ```
 
-The Compose stack runs PostgreSQL and Mosquitto and wires services:
+## Cenários de Experimento
 
-- db: Postgres 17 (port 5432)
-- mqtt: Mosquitto broker (port 1883)
-- cloud: FastAPI (port 9000), uses `CLOUD_DB_URL=postgresql://vispac:vispac@db:5432/vispac` and ensures the schema at startup
-- fog: FastAPI (port 8000), forwards to `http://cloud:9000` and listens to MQTT
-  (forwards to cloud in risk priority order: HIGH → MODERATE → LOW → MINIMAL)
-- edge: simulator, posts to `http://fog:8000/vispac/upload_batch` and uses MQTT when `EDGE_USE_MQTT=1`
+O simulador suporta três cenários configuráveis via variável `SCENARIO`:
 
-Verify the database schema in Compose:
-
-```bash
-# look for startup message
-docker compose logs -f cloud | grep -i schema
-
-# describe the table in Postgres
-docker compose exec db psql -U vispac -d vispac -c "\\d+ events"
-```
-
-Inspect stored events:
+| Cenário | Nome | Descrição |
+|---------|------|-----------|
+| 1 | Baseline | Transmissão contínua a 1 Hz, sem compressão |
+| 2 | Static | Compressão SDT + Huffman/LZW com parâmetros fixos |
+| 3 | ViSPAC | Compressão adaptativa + priorização NEWS2 + back-off + callbacks |
 
 ```bash
-docker compose exec db psql -U vispac -d vispac -c "SELECT id, patient_id, risk, score, signal, received_at FROM events ORDER BY id DESC LIMIT 10;"
+# Executar cenário específico
+export SCENARIO=3
+python vispac_edge_prototype.py
 ```
 
-If you use SQLite locally (no `CLOUD_DB_URL`):
+## Infraestrutura AWS (Terraform)
+
+O diretório `terraform/` contém a infraestrutura para deploy em AWS:
+
+- **20 instâncias Edge** (t2.small, us-east-1) com limites de CPU/memória (permitindo criar mais instâncias)
+- **1 instância Fog** (t3.small, us-east-1)
+- **1 instância Cloud** (t3.small, us-west-1) com PostgreSQL
+- **VPC Peering** entre regiões para simular latência realista
+
+### Deploy
 
 ```bash
-sqlite3 cloud_data.sqlite3 ".schema events"
-sqlite3 cloud_data.sqlite3 "SELECT id, patient_id, risk, score, signal, received_at FROM events ORDER BY id DESC LIMIT 10;"
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# Editar terraform.tfvars com suas configurações
+
+terraform init
+terraform plan
+terraform apply
 ```
 
-## Database model (events)
+Para detalhes completos, veja [terraform/README.md](terraform/README.md).
 
-Columns persisted by the cloud layer:
+## Análise de Resultados
 
-- id: integer (SERIAL/AUTOINCREMENT)
-- patient_id: text
-- risk: text (normalized stream key: high|moderate|low|minimal)
-- score: integer (NEWS2)
-- signal: text (source signal name when relevant)
-- data_json: text (raw JSON payload when present)
-- hr: real
-- spo2: real
-- rr: real
-- temp: real
-- sys_bp: real
-- on_o2: boolean (Postgres) / integer 0/1 (SQLite)
-- spo2_scale: integer
-- consciousness: text
-- received_at: timestamp default now
+O script `analyze_logs.py` processa os logs dos experimentos e gera:
 
-### DDL (PostgreSQL)
+- **CSVs** com métricas por Edge
+- **Dashboard HTML** interativo com gráficos comparativos
+- **Relatório Markdown** com resumo dos resultados
+
+### Uso
+
+```bash
+# Analisar um cenário
+python analyze_logs.py logs/scenario3_vispac --output results/
+
+# Comparar todos os cenários
+python analyze_logs.py --compare logs/ --output results/
+```
+
+### Dashboard Interativo
+
+Após a análise, o dashboard é gerado em `results/dashboard.html` e pode ser visualizado em:
+**https://roveda.dev/dissertacao/results/dashboard.html**
+
+O dashboard inclui:
+- Tabela comparativa dos três cenários
+- Gráficos de compressão, latência e PRD
+- Evolução do intervalo de coleta por paciente (back-off/reset)
+- Métricas Fog e Cloud
+
+## Métricas Coletadas
+
+| Métrica | Descrição |
+|---------|-----------|
+| Transmissões | Número de pacotes MQTT enviados |
+| Taxa de Compressão (%) | `(1 - comprimido/bruto) × 100` |
+| PRD (%) | Distorção do sinal reconstruído vs original |
+| Latência (ms) | Tempo Edge → Fog (coleta a confirmação) |
+| PRD por Risco | Distorção segmentada por nível NEWS2 |
+
+## Configuração
+
+### Variáveis de Ambiente
+
+| Variável | Descrição | Default |
+|----------|-----------|---------|
+| `SCENARIO` | Cenário de execução (1, 2 ou 3) | 3 |
+| `CLOUD_BASE_URL` | URL da API Cloud | `http://127.0.0.1:9000` |
+| `CLOUD_DB_URL` | String de conexão PostgreSQL | - |
+| `CLOUD_DB_PATH` | Caminho SQLite (fallback) | `cloud_data.sqlite3` |
+| `EDGE_USE_MQTT` | Habilitar MQTT | 0 |
+| `MQTT_BROKER` | Endereço do broker | `127.0.0.1` |
+| `MQTT_PORT` | Porta do broker | `1883` |
+| `DATASET_TYPE` | Tipo de dataset | `high_risk` |
+
+## Modelo de Dados (PostgreSQL)
 
 ```sql
 CREATE TABLE IF NOT EXISTS events (
@@ -166,36 +212,28 @@ CREATE TABLE IF NOT EXISTS events (
 );
 ```
 
-### DDL (SQLite)
+## Documentação Adicional
 
-```sql
-CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  patient_id TEXT,
-  risk TEXT,
-  score INTEGER,
-  signal TEXT,
-  data_json TEXT,
-  hr REAL,
-  spo2 REAL,
-  rr REAL,
-  temp REAL,
-  sys_bp REAL,
-  on_o2 INTEGER,
-  spo2_scale INTEGER,
-  consciousness TEXT,
-  received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
+- **[DATASETS.md](DATASETS.md)** - Guia completo de datasets
+- **[terraform/README.md](terraform/README.md)** - Documentação da infraestrutura AWS
 
-## Notes
+## Resultados Principais
 
-- The edge supports HTTP POST and optional MQTT (enable via `EDGE_USE_MQTT=1`).
-- Fog accepts both the legacy `hushman` header and `huffman` as an alias.
-- Cloud ensures the `events` schema at startup. When `CLOUD_DB_URL` is set, Postgres is used; otherwise it falls back to SQLite.
-- Each patient in the simulation uses specific data from the chosen dataset (see [DATASETS.md](DATASETS.md)).
+Os experimentos de 12 horas com 20 dispositivos Edge demonstraram:
 
-## Additional Documentation
+| Métrica | Baseline | Static | ViSPAC |
+|---------|----------|--------|--------|
+| Transmissões | 6.726.598 | 567.108 | **120.919** |
+| Compressão (%) | 0,0 | 74,0 | **80,7** |
+| PRD (%) | 0,0 | 3,89 | **1,30** |
+| Latência (ms) | 1.380 | 1.271 | **1.199** |
 
-- **[DATASETS.md](DATASETS.md)** - Complete guide on datasets (low/high risk), download instructions, and usage
-- **[DATASETS_GUIDE.md](DATASETS_GUIDE.md)** - Detailed technical documentation with statistics and examples
+O ViSPAC alcançou:
+- **98,2%** de redução nas transmissões vs Baseline
+- **80,7%** de taxa de compressão média
+- **1,30%** de distorção PRD (menor que Static apesar de maior compressão)
+- **98,2%** de redução no armazenamento Cloud
+
+## Licença
+
+Este projeto é parte da dissertação de mestrado de Mateus Roveda, sob orientação do Prof. Dr. Rodrigo da Rosa Righi, no Programa de Pós-Graduação em Computação Aplicada da UNISINOS.
