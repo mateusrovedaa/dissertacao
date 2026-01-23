@@ -164,8 +164,14 @@ LOW_PATIENTS = int(os.environ.get("LOW_PATIENTS", "3"))
 # These patients have highest NEWS2 score variability for demonstrating risk changes
 SPECIFIC_PATIENTS = os.environ.get("SPECIFIC_PATIENTS", "")
 
+# Specific patient IDs from low_risk dataset (for testing stable backoff scenarios)
+# Format: comma-separated list of patient IDs
+#   LOW_SPECIFIC_PATIENTS=99 python vispac_edge_prototype.py
+# Patient 99 has very stable SpO2 values to demonstrate 6h max backoff
+LOW_SPECIFIC_PATIENTS = os.environ.get("LOW_SPECIFIC_PATIENTS", "")
+
 # Validate that at least one patient is configured
-if HIGH_PATIENTS == 0 and LOW_PATIENTS == 0 and not SPECIFIC_PATIENTS:
+if HIGH_PATIENTS == 0 and LOW_PATIENTS == 0 and not SPECIFIC_PATIENTS and not LOW_SPECIFIC_PATIENTS:
     raise ValueError("At least one patient must be configured (HIGH_PATIENTS, LOW_PATIENTS > 0, or SPECIFIC_PATIENTS)")
 
 # =============================================================================
@@ -492,6 +498,30 @@ def load_datasets():
         log.info(f"  High-variability patients for risk change demonstration")
         return datasets, selected_patients
     
+    # If LOW_SPECIFIC_PATIENTS is set, use those exact IDs from low_risk dataset
+    if LOW_SPECIFIC_PATIENTS and LOW_SPECIFIC_PATIENTS.lower() not in ('none', ''):
+        low_path = DATASET_PATHS["low_risk"]
+        if not os.path.exists(low_path):
+            log.error(f"❌ Low-risk dataset not found: {low_path}")
+            raise FileNotFoundError(f"Dataset not found: {low_path}")
+        
+        low_df = pd.read_csv(low_path)
+        datasets["low_risk"] = low_df
+        
+        # Parse specific patient IDs
+        specific_ids = [int(pid.strip()) for pid in LOW_SPECIFIC_PATIENTS.split(",") if pid.strip()]
+        available_ids = list(low_df['patient_id'].unique())
+        
+        for pid in specific_ids:
+            if pid in available_ids:
+                selected_patients.append({"id": str(pid), "dataset": "low_risk", "df": low_df})
+            else:
+                log.warning(f"Patient ID {pid} not found in low_risk dataset")
+        
+        log.info(f"LOW_SPECIFIC_PATIENTS mode: using patient IDs {specific_ids}")
+        log.info(f"  Stable patients for 6h max backoff demonstration")
+        return datasets, selected_patients
+    
     # Load high_risk dataset if needed
     if HIGH_PATIENTS > 0:
         high_path = DATASET_PATHS["high_risk"]
@@ -771,7 +801,12 @@ class Patient:
         last_attr='last_sent_fc' if sig=='hr' else 'last_sent_spo2'
         st=getattr(self,st_attr); last=getattr(self,last_attr)
         if abs(latest-last)<=eps: st+=1
-        else: st=0; setattr(self,ic_attr,PARAMS[self.risk][ic_attr])
+        else:
+            old_ic = getattr(self, ic_attr)
+            new_ic = PARAMS[self.risk][ic_attr]
+            if old_ic != new_ic:
+                log.info(f"[BACKOFF RESET] {self.id} {sig.upper()} {old_ic}s→{new_ic}s (Δ={abs(latest-last):.1f} > ε={eps})")
+            st=0; setattr(self,ic_attr,new_ic)
         if st>=K_STABLE:
             cur=getattr(self,ic_attr); new=min(cur*2,self.ic_max)
             if new>cur: log.info(f"[BACKOFF] {self.id} {sig.upper()} {cur}s→{new}s")

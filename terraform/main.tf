@@ -420,17 +420,18 @@ resource "aws_instance" "edge" {
   }
 
   user_data = templatefile("${path.module}/scripts/edge_setup.sh", {
-    edge_id             = each.value.id
-    high_patients       = each.value.high_patients
-    low_patients        = each.value.low_patients
-    specific_patients   = coalesce(each.value.specific_patients, "none")
-    mqtt_broker         = aws_instance.fog.private_ip
-    git_repo            = var.git_repo_url
-    git_branch          = var.git_branch
-    memory_limit        = var.edge_memory_limit_mb
-    cpu_limit           = var.edge_cpu_limit_percent
-    scenario            = var.scenario
-    experiment_duration = var.experiment_duration_hours
+    edge_id               = each.value.id
+    high_patients         = each.value.high_patients
+    low_patients          = each.value.low_patients
+    specific_patients     = coalesce(each.value.specific_patients, "none")
+    low_specific_patients = coalesce(each.value.low_specific_patients, "none")
+    mqtt_broker           = aws_instance.fog.private_ip
+    git_repo              = var.git_repo_url
+    git_branch            = var.git_branch
+    memory_limit          = var.edge_memory_limit_mb
+    cpu_limit             = var.edge_cpu_limit_percent
+    scenario              = var.scenario
+    experiment_duration   = var.experiment_duration_hours
   })
 
   tags = {
