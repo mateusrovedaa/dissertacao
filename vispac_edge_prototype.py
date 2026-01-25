@@ -742,6 +742,9 @@ class Patient:
         
         # Track risk score and classification
         old=getattr(self,'risk','N/A')
+        old_ic_fc = getattr(self, 'ic_fc', None)
+        old_ic_spo2 = getattr(self, 'ic_spo2', None)
+        
         self.news2=score
         self.risk=('HIGH' if score>=7 else 'MODERATE' if score>=5 else 'LOW' if score>=1 else 'MINIMAL')
         
@@ -767,11 +770,16 @@ class Patient:
             self.t_sdt = scenario_cfg.get("fixed_t_sdt", p['t_sdt'])
             self.ic_max = p['ic_max']
         else:
-            # Scenario 2 & 3: Use risk-based intervals from PARAMS
+            # Scenario 3: Use risk-based intervals from PARAMS
             p = PARAMS[self.risk]
             # Only reset intervals if risk changed (preserve backoff progress)
             if risk_changed or old == 'N/A':
-                self.ic_fc, self.ic_spo2 = p['ic_fc'], p['ic_spo2']
+                new_ic_fc, new_ic_spo2 = p['ic_fc'], p['ic_spo2']
+                # Log interval reset due to risk change
+                if old != 'N/A' and (old_ic_fc != new_ic_fc or old_ic_spo2 != new_ic_spo2):
+                    log.info(f"[INTERVAL RESET] {self.id}: risco {old}→{self.risk} | "
+                             f"HR: {old_ic_fc}s→{new_ic_fc}s | SPO2: {old_ic_spo2}s→{new_ic_spo2}s")
+                self.ic_fc, self.ic_spo2 = new_ic_fc, new_ic_spo2
                 # Reset stable counters when risk changes
                 self.stable_fc = 0
                 self.stable_spo2 = 0
@@ -793,12 +801,21 @@ class Patient:
         # Recalculate risk after adjustments
         new_risk=('HIGH' if score>=7 else 'MODERATE' if score>=5 else 'LOW' if score>=1 else 'MINIMAL')
         if new_risk != self.risk:
-            log.info(f"[RISK] {self.id}: {self.risk} → {new_risk} (NEWS2={score}) [ADJUSTED]")
+            old_risk = self.risk
+            old_ic_fc_adj = self.ic_fc
+            old_ic_spo2_adj = self.ic_spo2
+            
             self.risk = new_risk
             self.news2 = score
             # Reset intervals for the new risk level
             p=PARAMS[self.risk]
-            self.ic_fc,self.ic_spo2=p['ic_fc'],p['ic_spo2']
+            new_ic_fc, new_ic_spo2 = p['ic_fc'], p['ic_spo2']
+            
+            log.info(f"[RISK] {self.id}: {old_risk} → {new_risk} (NEWS2={score}) [ADJUSTED]")
+            log.info(f"[INTERVAL RESET] {self.id}: risco ajustado {old_risk}→{self.risk} | "
+                     f"HR: {old_ic_fc_adj}s→{new_ic_fc}s | SPO2: {old_ic_spo2_adj}s→{new_ic_spo2}s")
+            
+            self.ic_fc, self.ic_spo2 = new_ic_fc, new_ic_spo2
             self.stable_fc = 0
             self.stable_spo2 = 0
         
@@ -808,28 +825,79 @@ class Patient:
         self.dc_fc,self.dc_spo2=p['dc_fc'],p['dc_spo2']
         self.t_sdt,self.ic_max=p['t_sdt'],p['ic_max']
 
-    def backoff(self,sig,latest):
+    def backoff(self, sig, latest):
+        """Algoritmo de Backoff Exponencial Condicionado ao Risco.
+        
+        Implementa o Algoritmo 3 da dissertação:
+        - Etapa 0: Se risco=HIGH, reseta contador e intervalo, retorna
+        - Etapa 1: Verifica estabilidade (|v - v_últ| <= ε)
+          - Se instável: reseta contador e intervalo para IC_base, retorna
+        - Etapa 2: Após K leituras estáveis, dobra o intervalo (até IC_max)
+        
+        Args:
+            sig: 'hr' ou 'spo2'
+            latest: valor mais recente da leitura
+        """
         # Disable backoff in non-adaptive scenarios
         if not SCENARIO_CONFIG[SCENARIO]["dynamic_adaptation"]:
             return
-        if self.risk=='HIGH':return
-        eps=self.eps_fc if sig=='hr' else self.eps_spo2
-        st_attr='stable_fc' if sig=='hr' else 'stable_spo2'
-        ic_attr='ic_fc' if sig=='hr' else 'ic_spo2'
-        last_attr='last_sent_fc' if sig=='hr' else 'last_sent_spo2'
-        st=getattr(self,st_attr); last=getattr(self,last_attr)
-        if abs(latest-last)<=eps: st+=1
+        
+        # Mapeamento de atributos por sinal
+        if sig == 'hr':
+            eps = self.eps_fc
+            st_attr = 'stable_fc'
+            ic_attr = 'ic_fc'
+            last_attr = 'last_sent_fc'
+            base_ic = PARAMS[self.risk]['ic_fc']
         else:
-            old_ic = getattr(self, ic_attr)
-            new_ic = PARAMS[self.risk][ic_attr]
-            if old_ic != new_ic:
-                log.info(f"[BACKOFF RESET] {self.id} {sig.upper()} {old_ic}s→{new_ic}s (Δ={abs(latest-last):.1f} > ε={eps})")
-            st=0; setattr(self,ic_attr,new_ic)
-        if st>=K_STABLE:
-            cur=getattr(self,ic_attr); new=min(cur*2,self.ic_max)
-            if new>cur: log.info(f"[BACKOFF] {self.id} {sig.upper()} {cur}s→{new}s")
-            setattr(self,ic_attr,new); st=0
-        setattr(self,st_attr,st); setattr(self,last_attr,latest)
+            eps = self.eps_spo2
+            st_attr = 'stable_spo2'
+            ic_attr = 'ic_spo2'
+            last_attr = 'last_sent_spo2'
+            base_ic = PARAMS[self.risk]['ic_spo2']
+        
+        st = getattr(self, st_attr)
+        cur_ic = getattr(self, ic_attr)
+        last = getattr(self, last_attr)
+        delta = abs(latest - last)
+        
+        # Etapa 0: Se risco=HIGH, reseta tudo e retorna
+        if self.risk == 'HIGH':
+            if st != 0 or cur_ic != base_ic:
+                log.debug(f"[BACKOFF HIGH] {self.id} {sig.upper()} reset (risco=HIGH)")
+            setattr(self, st_attr, 0)
+            setattr(self, ic_attr, base_ic)
+            setattr(self, last_attr, latest)
+            return
+        
+        # Etapa 1: Verifica estabilidade da leitura
+        if delta <= eps:
+            # Leitura estável, incrementa contador
+            st += 1
+            setattr(self, st_attr, st)
+        else:
+            # Leitura instável: reseta contador e intervalo para IC_base
+            if cur_ic != base_ic:
+                log.info(f"[BACKOFF RESET] {self.id} {sig.upper()} {cur_ic}s→{base_ic}s (Δ={delta:.1f} > ε={eps})")
+            setattr(self, st_attr, 0)
+            setattr(self, ic_attr, base_ic)
+            setattr(self, last_attr, latest)
+            return  # Retorna imediatamente conforme o algoritmo
+        
+        # Etapa 2: Aplica backoff exponencial após K leituras estáveis
+        if st >= K_STABLE:
+            # Determina IC_max baseado no risco
+            ic_max = self.ic_max
+            new_ic = min(cur_ic * 2, ic_max)
+            
+            if new_ic > cur_ic:
+                log.info(f"[BACKOFF] {self.id} {sig.upper()} {cur_ic}s→{new_ic}s (stable_count={st})")
+            
+            setattr(self, ic_attr, new_ic)
+            setattr(self, st_attr, 0)  # Reseta contador após aplicar backoff
+        
+        # Atualiza último valor
+        setattr(self, last_attr, latest)
 
     def get_current_vitals(self):
         """
