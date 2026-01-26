@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VISPAC Log Analysis Script with HTML Dashboard
+ViSPAC Log Analysis Script with HTML Dashboard
 
 Parses experiment logs from edge devices and extracts metrics for comparison
 across the 3 test scenarios (baseline, static, vispac).
@@ -14,7 +14,7 @@ Usage:
     python analyze_logs.py logs/scenario1_baseline --output results/
     python analyze_logs.py --compare logs/ --output results/
 
-Author: VISPAC Research
+Author: ViSPAC Research
 """
 
 import argparse
@@ -74,8 +74,10 @@ class EdgeMetrics:
     patient_risk_history: Dict[str, List[Tuple[datetime, str, int]]] = field(default_factory=dict)
     # All NEWS2 scores per patient: patient_id -> [(timestamp, news2_score)]
     patient_news2_history: Dict[str, List[Tuple[datetime, int]]] = field(default_factory=dict)
-    # Backoff events per patient: patient_id -> [(timestamp, signal, old_interval, new_interval)]
-    patient_backoff_history: Dict[str, List[Tuple[datetime, str, int, int]]] = field(default_factory=dict)
+    # Backoff/Reset events per patient: patient_id -> [(timestamp, signal, old_interval, new_interval, event_type, extra_info)]
+    # event_type: 'backoff' | 'backoff_reset' | 'interval_reset'
+    # extra_info: dict with stable_count (for backoff), delta/epsilon (for backoff_reset), old_risk/new_risk (for interval_reset)
+    patient_backoff_history: Dict[str, List[Tuple[datetime, str, int, int, str, dict]]] = field(default_factory=dict)
     # Resource metrics
     cpu_samples: List[float] = field(default_factory=list)
     memory_samples: List[float] = field(default_factory=list)
@@ -146,7 +148,7 @@ class CloudMetrics:
 
 
 class LogParser:
-    """Parses VISPAC edge log files and extracts metrics."""
+    """Parses ViSPAC edge log files and extracts metrics."""
     
     # Regex patterns for log parsing
     PATTERNS = {
@@ -185,9 +187,17 @@ class LogParser:
         'scores': re.compile(
             r"scores=\{([^}]+)\}"
         ),
-        # [BACKOFF] 6 HR 300s→600s
+        # [BACKOFF] 6 HR 300s→600s (stable_count=3)
         'backoff': re.compile(
-            r'\[BACKOFF\]\s+(\S+)\s+(HR|SPO2)\s+(\d+)s→(\d+)s'
+            r'\[BACKOFF\]\s+(\S+)\s+(HR|SPO2)\s+(\d+)s→(\d+)s(?:\s+\(stable_count=(\d+)\))?'
+        ),
+        # [BACKOFF RESET] 6 HR 600s→300s (Δ=15.0 > ε=10)
+        'backoff_reset': re.compile(
+            r'\[BACKOFF RESET\]\s+(\S+)\s+(HR|SPO2)\s+(\d+)s→(\d+)s\s+\(Δ=(\d+\.?\d*)\s*>\s*ε=(\d+\.?\d*)\)'
+        ),
+        # [INTERVAL RESET] 2: risco MINIMAL→LOW | HR: 1200s→300s | SPO2: 1800s→600s
+        'interval_reset': re.compile(
+            r'\[INTERVAL RESET\]\s+(\S+):\s+risco\s+(\w+)→(\w+)\s+\|\s+HR:\s+(\d+)s→(\d+)s\s+\|\s+SPO2:\s+(\d+)s→(\d+)s'
         ),
         # Fog/Cloud Metrics (New)
         'fog_metrics': re.compile(
@@ -391,15 +401,49 @@ class LogParser:
             metrics.memory_samples.append(float(match.group(1)))
             return
         
-        # Try to match backoff events (only in vispac scenario)
+        # Try to match backoff/reset events (only in vispac scenario)
         if 'vispac' in self.scenario:
+            # [BACKOFF] events - exponential backoff due to stable readings
             match = self.PATTERNS['backoff'].search(line)
             if match:
-                patient_id, signal, old_interval, new_interval = match.groups()
+                groups = match.groups()
+                patient_id, signal, old_interval, new_interval = groups[:4]
+                stable_count = int(groups[4]) if groups[4] else 3  # Default K=3
                 if patient_id not in metrics.patient_backoff_history:
                     metrics.patient_backoff_history[patient_id] = []
                 metrics.patient_backoff_history[patient_id].append(
-                    (self.current_timestamp or datetime.now(), signal, int(old_interval), int(new_interval))
+                    (self.current_timestamp or datetime.now(), signal, int(old_interval), int(new_interval),
+                     'backoff', {'stable_count': stable_count})
+                )
+                return
+            
+            # [BACKOFF RESET] events - reset due to signal variation exceeding epsilon
+            match = self.PATTERNS['backoff_reset'].search(line)
+            if match:
+                patient_id, signal, old_interval, new_interval, delta, epsilon = match.groups()
+                if patient_id not in metrics.patient_backoff_history:
+                    metrics.patient_backoff_history[patient_id] = []
+                metrics.patient_backoff_history[patient_id].append(
+                    (self.current_timestamp or datetime.now(), signal, int(old_interval), int(new_interval),
+                     'backoff_reset', {'delta': float(delta), 'epsilon': float(epsilon)})
+                )
+                return
+            
+            # [INTERVAL RESET] events - reset due to risk level change
+            match = self.PATTERNS['interval_reset'].search(line)
+            if match:
+                patient_id, old_risk, new_risk, hr_old, hr_new, spo2_old, spo2_new = match.groups()
+                if patient_id not in metrics.patient_backoff_history:
+                    metrics.patient_backoff_history[patient_id] = []
+                # Add HR reset event
+                metrics.patient_backoff_history[patient_id].append(
+                    (self.current_timestamp or datetime.now(), 'HR', int(hr_old), int(hr_new),
+                     'interval_reset', {'old_risk': old_risk, 'new_risk': new_risk})
+                )
+                # Add SPO2 reset event
+                metrics.patient_backoff_history[patient_id].append(
+                    (self.current_timestamp or datetime.now(), 'SPO2', int(spo2_old), int(spo2_new),
+                     'interval_reset', {'old_risk': old_risk, 'new_risk': new_risk})
                 )
                 return
     
@@ -559,10 +603,12 @@ class LogParser:
                 sorted_history = sorted(history, key=lambda x: x[0])
                 
                 all_histories[full_id] = {
-                    'timestamps': [ts.isoformat() for ts, _, _, _ in sorted_history],
-                    'signals': [signal for _, signal, _, _ in sorted_history],
-                    'old_intervals': [old for _, _, old, _ in sorted_history],
-                    'new_intervals': [new for _, _, _, new in sorted_history]
+                    'timestamps': [ts.isoformat() for ts, _, _, _, _, _ in sorted_history],
+                    'signals': [signal for _, signal, _, _, _, _ in sorted_history],
+                    'old_intervals': [old for _, _, old, _, _, _ in sorted_history],
+                    'new_intervals': [new for _, _, _, new, _, _ in sorted_history],
+                    'event_types': [evt_type for _, _, _, _, evt_type, _ in sorted_history],
+                    'extra_info': [extra for _, _, _, _, _, extra in sorted_history]
                 }
         return all_histories
 
@@ -666,7 +712,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VISPAC - Dashboard de Resultados</title>
+    <title>ViSPAC - Dashboard de Resultados</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
@@ -895,7 +941,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
 </head>
 <body>
     <div class="header">
-        <h1>🏥 VISPAC Dashboard</h1>
+        <h1>🏥 ViSPAC Dashboard</h1>
         <p>Análise de Resultados dos Experimentos - Monitoramento de Sinais Vitais em Edge Computing</p>
     </div>
     
@@ -1007,7 +1053,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
         {'<div class="card full-width"><h2>🔄 Evolução do Risco dos Pacientes (Cenário 3)</h2><div><label for="patientSelect">Selecione o Paciente:</label><select id="patientSelect" onchange="updateRiskChart()"></select></div><div class="chart-container" style="height: 400px;"><canvas id="riskEvolutionChart"></canvas></div></div>' if risk_histories else ''}
         
         <!-- Backoff/Collection Interval Evolution (Scenario 3 only) -->
-        {'<div class="card full-width"><h2>⏱️ Evolução do Intervalo de Coleta (Cenário 3)</h2><div style="display: flex; align-items: center; gap: 20px; margin-bottom: 15px;"><div><label for="backoffPatientSelect">Selecione o Paciente:</label><select id="backoffPatientSelect" onchange="updateBackoffCharts()"></select></div><div style="font-size: 0.85em; color: var(--text-secondary);"><span style="display: inline-block; width: 12px; height: 12px; background: #ff6b6b; border-radius: 50%; margin-right: 4px;"></span>HR <span style="display: inline-block; width: 12px; height: 12px; background: #4ecdc4; border-radius: 50%; margin-left: 12px; margin-right: 4px;"></span>SpO2 <span style="display: inline-block; width: 12px; height: 12px; background: #dc2626; border-radius: 3px; margin-left: 12px; margin-right: 4px;"></span>Reset</div></div><h3 style="font-size: 1em; color: var(--accent); margin-bottom: 5px;">❤️ Frequência Cardíaca (HR)</h3><div class="chart-container" style="height: 200px;"><canvas id="backoffChartHR"></canvas></div><h3 style="font-size: 1em; color: var(--accent); margin: 15px 0 5px 0;">🫁 Saturação de Oxigênio (SpO2)</h3><div class="chart-container" style="height: 200px;"><canvas id="backoffChartSpO2"></canvas></div></div>' if backoff_histories else ''}
+        {'<div class="card full-width"><h2>⏱️ Evolução do Intervalo de Coleta (Cenário 3)</h2><div style="display: flex; flex-wrap: wrap; align-items: center; gap: 20px; margin-bottom: 15px;"><div><label for="backoffPatientSelect">Selecione o Paciente:</label><select id="backoffPatientSelect" onchange="updateBackoffCharts()"></select></div><div style="font-size: 0.85em; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: 12px;"><span title="Intervalo dobrou após K=3 leituras estáveis"><span style="display: inline-block; width: 12px; height: 12px; background: #22c55e; border-radius: 50%; margin-right: 4px;"></span>⬆ Backoff (K=3)</span><span title="Reset por variação do sinal (|Δ| > ε)"><span style="display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 12px solid #f59e0b; margin-right: 4px;"></span>⬇ Reset (Δ>ε)</span><span title="Reset por mudança de nível de risco"><span style="display: inline-block; width: 10px; height: 10px; background: #dc2626; transform: rotate(45deg); margin-right: 6px;"></span>⬇ Reset (Risco)</span></div></div><p style="font-size: 0.8em; color: var(--text-secondary); margin-bottom: 10px;"><strong>Backoff:</strong> intervalo dobra após 3 leituras consecutivas estáveis (|v - v<sub>últ</sub>| ≤ ε). <strong>Reset:</strong> intervalo volta ao base quando leitura varia (|Δ| > ε) ou nível de risco muda.</p><h3 style="font-size: 1em; color: var(--accent); margin-bottom: 5px;">❤️ Frequência Cardíaca (HR)</h3><div class="chart-container" style="height: 250px;"><canvas id="backoffChartHR"></canvas></div><h3 style="font-size: 1em; color: var(--accent); margin: 15px 0 5px 0;">🫁 Saturação de Oxigênio (SpO2)</h3><div class="chart-container" style="height: 250px;"><canvas id="backoffChartSpO2"></canvas></div></div>' if backoff_histories else ''}
         
         <!-- Fog & Cloud Comparison Tables -->
         <div class="card full-width">
@@ -1457,59 +1503,48 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             'HIGH': 'rgba(231, 29, 54, 0.2)'
         }};
         
+        // Event type colors and styles
+        const EVENT_STYLES = {{
+            'backoff': {{ color: '#22c55e', pointStyle: 'circle', label: '⬆ Backoff' }},           // Green - stable count reached
+            'backoff_reset': {{ color: '#f59e0b', pointStyle: 'triangle', label: '⬇ Reset (Δ>ε)' }},  // Orange - signal variation
+            'interval_reset': {{ color: '#dc2626', pointStyle: 'rectRot', label: '⬇ Reset (Risco)' }}  // Red - risk change
+        }};
+        
         function createSignalChart(canvasId, signalName, signalData, patientId, color) {{
             const ctx = document.getElementById(canvasId);
             if (!ctx) return null;
             
-            // Build data points including inferred resets
-            const dataPoints = [];
-            const resetPoints = [];
-            
-            for (let i = 0; i < signalData.length; i++) {{
-                const curr = signalData[i];
-                const currTime = new Date(curr.timestamp);
-                
-                // Check if this is a reset (old_interval < previous new_interval)
-                if (i > 0) {{
-                    const prev = signalData[i - 1];
-                    if (curr.oldInterval < prev.newInterval) {{
-                        // Infer reset happened - add reset point
-                        const resetTime = new Date((new Date(prev.timestamp).getTime() + currTime.getTime()) / 2);
-                        resetPoints.push({{
-                            x: resetTime,
-                            y: curr.oldInterval,
-                            isReset: true,
-                            risk: getRiskAtTime(patientId, resetTime)
-                        }});
-                    }}
-                }}
-                
-                // Add current backoff point
-                dataPoints.push({{
-                    x: currTime,
+            // Build data points using explicit event types (no more inference!)
+            const dataPoints = signalData.map(curr => {{
+                const eventStyle = EVENT_STYLES[curr.eventType] || EVENT_STYLES['backoff'];
+                return {{
+                    x: new Date(curr.timestamp),
                     y: curr.newInterval,
                     oldInterval: curr.oldInterval,
-                    isReset: false,
-                    risk: getRiskAtTime(patientId, currTime)
-                }});
-            }}
+                    eventType: curr.eventType,
+                    extraInfo: curr.extraInfo,
+                    risk: getRiskAtTime(patientId, curr.timestamp),
+                    pointColor: eventStyle.color,
+                    pointStyle: eventStyle.pointStyle
+                }};
+            }});
             
-            // Merge and sort all points
-            const allPoints = [...resetPoints, ...dataPoints].sort((a, b) => a.x - b.x);
+            // Sort by time
+            dataPoints.sort((a, b) => a.x - b.x);
             
             return new Chart(ctx, {{
                 type: 'line',
                 data: {{
                     datasets: [{{
                         label: signalName,
-                        data: allPoints,
+                        data: dataPoints,
                         borderColor: color,
                         backgroundColor: color.replace(')', ', 0.1)').replace('rgb', 'rgba'),
                         fill: true,
                         stepped: 'before',
-                        pointRadius: allPoints.map(p => p.isReset ? 8 : 5),
-                        pointStyle: allPoints.map(p => p.isReset ? 'rectRot' : 'circle'),
-                        pointBackgroundColor: allPoints.map(p => p.isReset ? '#dc2626' : color),
+                        pointRadius: dataPoints.map(p => p.eventType === 'backoff' ? 6 : 8),
+                        pointStyle: dataPoints.map(p => p.pointStyle),
+                        pointBackgroundColor: dataPoints.map(p => p.pointColor),
                         pointBorderColor: '#fff',
                         pointBorderWidth: 2
                     }}]
@@ -1523,10 +1558,23 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                             callbacks: {{
                                 label: function(context) {{
                                     const p = context.raw;
-                                    if (p.isReset) {{
-                                        return `⬇ RESET para ${{p.y}}s (Risco: ${{p.risk}})`;
+                                    const style = EVENT_STYLES[p.eventType] || {{}};
+                                    let tooltip = `${{p.oldInterval}}s → ${{p.y}}s`;
+                                    
+                                    if (p.eventType === 'backoff') {{
+                                        const stableCount = p.extraInfo?.stable_count || 3;
+                                        tooltip = `⬆ Backoff: ${{p.oldInterval}}s → ${{p.y}}s (K=${{stableCount}} estável)`;
+                                    }} else if (p.eventType === 'backoff_reset') {{
+                                        const delta = p.extraInfo?.delta?.toFixed(1) || '?';
+                                        const epsilon = p.extraInfo?.epsilon || '?';
+                                        tooltip = `⬇ Reset: ${{p.oldInterval}}s → ${{p.y}}s (Δ=${{delta}} > ε=${{epsilon}})`;
+                                    }} else if (p.eventType === 'interval_reset') {{
+                                        const oldRisk = p.extraInfo?.old_risk || '?';
+                                        const newRisk = p.extraInfo?.new_risk || '?';
+                                        tooltip = `⬇ Reset: ${{p.oldInterval}}s → ${{p.y}}s (Risco: ${{oldRisk}}→${{newRisk}})`;
                                     }}
-                                    return `${{p.oldInterval}}s → ${{p.y}}s (Risco: ${{p.risk}})`;
+                                    
+                                    return tooltip + ` [Risco atual: ${{p.risk}}]`;
                                 }}
                             }}
                         }}
@@ -1560,7 +1608,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             if (backoffChartHR) {{ backoffChartHR.destroy(); backoffChartHR = null; }}
             if (backoffChartSpO2) {{ backoffChartSpO2.destroy(); backoffChartSpO2 = null; }}
             
-            // Separate data by signal type
+            // Separate data by signal type, including event type and extra info
             const hrData = [];
             const spo2Data = [];
             
@@ -1568,7 +1616,9 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 const entry = {{
                     timestamp: history.timestamps[i],
                     oldInterval: history.old_intervals[i],
-                    newInterval: history.new_intervals[i]
+                    newInterval: history.new_intervals[i],
+                    eventType: history.event_types[i],
+                    extraInfo: history.extra_info[i]
                 }};
                 
                 if (history.signals[i] === 'HR') {{
@@ -1578,7 +1628,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 }}
             }}
             
-            // Create charts
+            // Create charts with signal-specific colors
             if (hrData.length > 0) {{
                 backoffChartHR = createSignalChart('backoffChartHR', 'HR', hrData, patientId, '#ff6b6b');
             }}
@@ -1684,7 +1734,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
 def generate_comparison_report(summaries: List[Dict], output_path: Path) -> None:
     """Generate markdown comparison report."""
     with open(output_path, 'w') as f:
-        f.write("# VISPAC Experiment Results - Comparison Report\n\n")
+        f.write("# ViSPAC Experiment Results - Comparison Report\n\n")
         f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
         
         f.write("## Summary Table\n\n")
@@ -1734,7 +1784,7 @@ def generate_comparison_report(summaries: List[Dict], output_path: Path) -> None
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Analyze VISPAC experiment logs')
+    parser = argparse.ArgumentParser(description='Analyze ViSPAC experiment logs')
     parser.add_argument('logs_dir', type=Path, help='Directory containing log files')
     parser.add_argument('--output', '-o', type=Path, default=Path('results'),
                        help='Output directory for results')
