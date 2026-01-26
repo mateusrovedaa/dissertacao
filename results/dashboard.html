@@ -344,7 +344,7 @@
         <div class="card full-width"><h2>🔄 Evolução do Risco dos Pacientes (Cenário 3)</h2><div><label for="patientSelect">Selecione o Paciente:</label><select id="patientSelect" onchange="updateRiskChart()"></select></div><div class="chart-container" style="height: 400px;"><canvas id="riskEvolutionChart"></canvas></div></div>
         
         <!-- Backoff/Collection Interval Evolution (Scenario 3 only) -->
-        <div class="card full-width"><h2>⏱️ Evolução do Intervalo de Coleta (Cenário 3)</h2><div style="display: flex; flex-wrap: wrap; align-items: center; gap: 20px; margin-bottom: 15px;"><div><label for="backoffPatientSelect">Selecione o Paciente:</label><select id="backoffPatientSelect" onchange="updateBackoffCharts()"></select></div><div style="font-size: 0.85em; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: 12px;"><span title="Intervalo dobrou após K=3 leituras estáveis"><span style="display: inline-block; width: 12px; height: 12px; background: #22c55e; border-radius: 50%; margin-right: 4px;"></span>⬆ Backoff (K=3)</span><span title="Reset por variação do sinal (|Δ| > ε)"><span style="display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 12px solid #f59e0b; margin-right: 4px;"></span>⬇ Reset (Δ>ε)</span><span title="Reset por mudança de nível de risco"><span style="display: inline-block; width: 10px; height: 10px; background: #dc2626; transform: rotate(45deg); margin-right: 6px;"></span>⬇ Reset (Risco)</span></div></div><p style="font-size: 0.8em; color: var(--text-secondary); margin-bottom: 10px;"><strong>Backoff:</strong> intervalo dobra após 3 leituras consecutivas estáveis (|v - v<sub>últ</sub>| ≤ ε). <strong>Reset:</strong> intervalo volta ao base quando leitura varia (|Δ| > ε) ou nível de risco muda.</p><h3 style="font-size: 1em; color: var(--accent); margin-bottom: 5px;">❤️ Frequência Cardíaca (HR)</h3><div class="chart-container" style="height: 250px;"><canvas id="backoffChartHR"></canvas></div><h3 style="font-size: 1em; color: var(--accent); margin: 15px 0 5px 0;">🫁 Saturação de Oxigênio (SpO2)</h3><div class="chart-container" style="height: 250px;"><canvas id="backoffChartSpO2"></canvas></div></div>
+        <div class="card full-width"><h2>⏱️ Evolução do Intervalo de Coleta (Algoritmos 2 e 3)</h2><div style="display: flex; flex-wrap: wrap; align-items: center; gap: 20px; margin-bottom: 15px;"><div><label for="backoffPatientSelect">Selecione o Paciente:</label><select id="backoffPatientSelect" onchange="updateBackoffCharts()"></select></div><div style="font-size: 0.85em; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: 15px;"><span title="Algoritmo 2: Intervalo dobrou após K=3 leituras estáveis" style="cursor: help;"><span style="display: inline-block; width: 12px; height: 12px; background: #22c55e; border-radius: 50%; margin-right: 4px;"></span>⬆ Backoff Exponencial (Alg. 2)</span><span title="Algoritmo 3: Vigilância detectou variação anômala e disparou reset" style="cursor: help;"><span style="display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 12px solid #f59e0b; margin-right: 4px;"></span>⬇ Vigilância Contínua (Alg. 3)</span><span title="Reset por mudança de nível de risco do paciente" style="cursor: help;"><span style="display: inline-block; width: 10px; height: 10px; background: #dc2626; transform: rotate(45deg); margin-right: 6px;"></span>⬇ Mudança de Risco</span></div></div><div style="font-size: 0.8em; color: var(--text-secondary); margin-bottom: 15px; background: rgba(0,0,0,0.03); padding: 10px; border-radius: 6px;"><p style="margin: 0 0 5px 0;"><strong style="color: #22c55e;">● Algoritmo 2 (Backoff Exponencial):</strong> Após K=3 leituras estáveis (|v - v<sub>últ</sub>| ≤ ε), o intervalo de coleta dobra até IC<sub>max</sub>.</p><p style="margin: 0 0 5px 0;"><strong style="color: #f59e0b;">▲ Algoritmo 3 (Vigilância Contínua):</strong> Quando |v - v<sub>últ</sub>| > ε, detecta variação anômala e reseta o intervalo para IC<sub>base</sub>.</p><p style="margin: 0;"><strong style="color: #dc2626;">◆ Mudança de Risco:</strong> Quando o NEWS2 muda o nível de risco, os intervalos são resetados para os valores do novo nível.</p></div><h3 style="font-size: 1em; color: var(--accent); margin-bottom: 5px;">❤️ Frequência Cardíaca (HR)</h3><div class="chart-container" style="height: 250px;"><canvas id="backoffChartHR"></canvas></div><h3 style="font-size: 1em; color: var(--accent); margin: 15px 0 5px 0;">🫁 Saturação de Oxigênio (SpO2)</h3><div class="chart-container" style="height: 250px;"><canvas id="backoffChartSpO2"></canvas></div></div>
         
         <!-- Fog & Cloud Comparison Tables -->
         <div class="card full-width">
@@ -396,7 +396,7 @@
     </div>
     
     <div class="generated-time">
-        Gerado em: 2026-01-26 07:49:12
+        Gerado em: 2026-01-26 08:46:51
     </div>
     
     <script>
@@ -796,9 +796,9 @@
         
         // Event type colors and styles
         const EVENT_STYLES = {
-            'backoff': { color: '#22c55e', pointStyle: 'circle', label: '⬆ Backoff' },           // Green - stable count reached
-            'backoff_reset': { color: '#f59e0b', pointStyle: 'triangle', label: '⬇ Reset (Δ>ε)' },  // Orange - signal variation
-            'interval_reset': { color: '#dc2626', pointStyle: 'rectRot', label: '⬇ Reset (Risco)' }  // Red - risk change
+            'backoff': { color: '#22c55e', pointStyle: 'circle', label: '⬆ Alg.2 Backoff' },           // Green - stable count reached
+            'backoff_reset': { color: '#f59e0b', pointStyle: 'triangle', label: '⬇ Alg.3 Vigilância' },  // Orange - signal variation detected
+            'interval_reset': { color: '#dc2626', pointStyle: 'rectRot', label: '⬇ Mudança Risco' }  // Red - risk level change
         };
         
         function createSignalChart(canvasId, signalName, signalData, patientId, color) {
@@ -854,18 +854,18 @@
                                     
                                     if (p.eventType === 'backoff') {
                                         const stableCount = p.extraInfo?.stable_count || 3;
-                                        tooltip = `⬆ Backoff: ${p.oldInterval}s → ${p.y}s (K=${stableCount} estável)`;
+                                        tooltip = `⬆ Alg.2 Backoff Exponencial: ${p.oldInterval}s → ${p.y}s (K=${stableCount} leituras estáveis)`;
                                     } else if (p.eventType === 'backoff_reset') {
                                         const delta = p.extraInfo?.delta?.toFixed(1) || '?';
                                         const epsilon = p.extraInfo?.epsilon || '?';
-                                        tooltip = `⬇ Reset: ${p.oldInterval}s → ${p.y}s (Δ=${delta} > ε=${epsilon})`;
+                                        tooltip = `⬇ Alg.3 Vigilância Contínua: ${p.oldInterval}s → ${p.y}s (Δ=${delta} > ε=${epsilon})`;
                                     } else if (p.eventType === 'interval_reset') {
                                         const oldRisk = p.extraInfo?.old_risk || '?';
                                         const newRisk = p.extraInfo?.new_risk || '?';
-                                        tooltip = `⬇ Reset: ${p.oldInterval}s → ${p.y}s (Risco: ${oldRisk}→${newRisk})`;
+                                        tooltip = `⬇ Mudança de Risco: ${p.oldInterval}s → ${p.y}s (${oldRisk} → ${newRisk})`;
                                     }
                                     
-                                    return tooltip + ` [Risco atual: ${p.risk}]`;
+                                    return tooltip + ` | Risco: ${p.risk}`;
                                 }
                             }
                         }
