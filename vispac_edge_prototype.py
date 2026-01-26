@@ -640,9 +640,9 @@ def get_initial_vitals_moderate_risk():
 # ------------- Algorithm 1 Parameters ------------
 PARAMS={
  "HIGH":     dict(ic_fc=15,  eps_fc=2,  dc_fc=2,  ic_spo2=15,  eps_spo2=1, dc_spo2=1, t_sdt=15,  ic_max=30*60),
- "MODERATE": dict(ic_fc=120, eps_fc=5,  dc_fc=5,  ic_spo2=180, eps_spo2=1, dc_spo2=1, t_sdt=60,  ic_max=30*60),
- "LOW":      dict(ic_fc=300, eps_fc=5,  dc_fc=5,  ic_spo2=600, eps_spo2=2, dc_spo2=2, t_sdt=180, ic_max=2*3600),
- "MINIMAL":  dict(ic_fc=600, eps_fc=10, dc_fc=10, ic_spo2=900, eps_spo2=3, dc_spo2=3, t_sdt=300, ic_max=6*3600)
+ "MODERATE": dict(ic_fc=120, eps_fc=5,  dc_fc=5,  ic_spo2=120, eps_spo2=1, dc_spo2=1, t_sdt=60,  ic_max=30*60),
+ "LOW":      dict(ic_fc=300, eps_fc=5,  dc_fc=5,  ic_spo2=300, eps_spo2=2, dc_spo2=2, t_sdt=180, ic_max=2*3600),
+ "MINIMAL":  dict(ic_fc=600, eps_fc=10, dc_fc=10, ic_spo2=600, eps_spo2=3, dc_spo2=3, t_sdt=300, ic_max=6*3600)
 }
 
 # --------------- Classes --------------------
