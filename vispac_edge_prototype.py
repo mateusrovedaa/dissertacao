@@ -216,7 +216,7 @@ if SCENARIO not in SCENARIO_CONFIG:
 log.info(f"Running scenario: {SCENARIO} - {SCENARIO_CONFIG[SCENARIO]['description']}")
 
 K_STABLE = 3
-KEEP_ALIVE = 600
+KEEP_ALIVE = 120
 HUFF_MIN, LZW_MIN = 1 * 1024, 32 * 1024
 
 ASSEMBLER_CONFIG = {
@@ -834,23 +834,23 @@ class Patient:
         # unless risk changes (handled above)
 
     def backoff(self, sig, latest):
-        """Algoritmo de Backoff Exponencial Condicionado ao Risco.
+        """Risk-Conditioned Exponential Backoff Algorithm.
         
-        Implementa o Algoritmo 3 da dissertação:
-        - Etapa 0: Se risco=HIGH, reseta contador e intervalo, retorna
-        - Etapa 1: Verifica estabilidade (|v - v_últ| <= ε)
-          - Se instável: reseta contador e intervalo para IC_base, retorna
-        - Etapa 2: Após K leituras estáveis, dobra o intervalo (até IC_max)
+        Implements Algorithm 2 from the dissertation:
+        - Step 0: If risk=HIGH, reset counter and interval, return
+        - Step 1: Check stability (|v - v_last| <= ε)
+          - If unstable: reset counter and interval to IC_base, return
+        - Step 2: After K stable readings, double the interval (up to IC_max)
         
         Args:
-            sig: 'hr' ou 'spo2'
-            latest: valor mais recente da leitura
+            sig: 'hr' or 'spo2'
+            latest: most recent reading value
         """
         # Disable backoff in non-adaptive scenarios
         if not SCENARIO_CONFIG[SCENARIO]["dynamic_adaptation"]:
             return
         
-        # Mapeamento de atributos por sinal
+        # Attribute mapping by signal
         if sig == 'hr':
             eps = self.eps_fc
             st_attr = 'stable_fc'
@@ -873,7 +873,7 @@ class Patient:
         last = getattr(self, last_attr)
         delta = abs(latest - last)
         
-        # Etapa 0: Se risco=HIGH, reseta tudo e retorna
+        # Step 0: If risk=HIGH, reset everything and return
         if self.risk == 'HIGH':
             if st != 0 or cur_ic != base_ic:
                 log.debug(f"[BACKOFF HIGH] {self.id} {sig.upper()} reset (risco=HIGH)")
@@ -883,24 +883,24 @@ class Patient:
             setattr(self, last_attr, latest)
             return
         
-        # Etapa 1: Verifica estabilidade da leitura
+        # Step 1: Check reading stability
         if delta <= eps:
-            # Leitura estável, incrementa contador
+            # Stable reading, increment counter
             st += 1
             setattr(self, st_attr, st)
         else:
-            # Leitura instável: reseta contador e intervalo para IC_base
+            # Unstable reading: reset counter and interval to IC_base
             if cur_ic != base_ic:
                 log.info(f"[BACKOFF RESET] {self.id} {sig.upper()} IC: {cur_ic}s→{base_ic}s | T_SDT: →{base_t_sdt}s (Δ={delta:.1f} > ε={eps})")
             setattr(self, st_attr, 0)
             setattr(self, ic_attr, base_ic)
             setattr(self, tsdt_attr, base_t_sdt)
             setattr(self, last_attr, latest)
-            return  # Retorna imediatamente conforme o algoritmo
+            return  # Return immediately as per the algorithm
         
-        # Etapa 2: Aplica backoff exponencial após K leituras estáveis
+        # Step 2: Apply exponential backoff after K stable readings
         if st >= K_STABLE:
-            # Determina IC_max baseado no risco
+            # Determine IC_max based on risk
             ic_max = self.ic_max
             new_ic = min(cur_ic * 2, ic_max)
             
@@ -911,9 +911,9 @@ class Patient:
                 log.info(f"[BACKOFF] {self.id} {sig.upper()} {cur_ic}s→{new_ic}s (stable_count={st}) | t_sdt→{new_t_sdt}s")
             
             setattr(self, ic_attr, new_ic)
-            setattr(self, st_attr, 0)  # Reseta contador após aplicar backoff
+            setattr(self, st_attr, 0)  # Reset counter after applying backoff
         
-        # Atualiza último valor
+        # Update last value
         setattr(self, last_attr, latest)
 
     def get_current_vitals(self):
@@ -1259,13 +1259,35 @@ def main():
     try:
         while True:
             now=time.time()
-            if now-last_keep>=KEEP_ALIVE:
-                log.info("[ALG3] Keep‑alive check …")
+            if now - last_keep >= KEEP_ALIVE:
+                log.info(f"[ALG3] Vigilância contínua - verificando {len(patients)} pacientes...")
+                
                 for p in patients:
-                    v=p.next()
-                    if abs(v['hr']-p.last_sent_fc)>p.eps_fc: p.last_fc_col=0
-                    if abs(v['spo2']-p.last_sent_spo2)>p.eps_spo2: p.last_spo2_col=0
-                last_keep=now
+                    v = p.next()
+                    
+                    # Check HR
+                    delta_fc = abs(v['hr'] - p.last_sent_fc)
+                    if delta_fc > p.eps_fc:
+                        base_ic_fc = PARAMS[p.risk]['ic_fc']
+                        base_t_sdt_fc = PARAMS[p.risk]['t_sdt_fc']
+                        log.warning(f"[VIGILÂNCIA] {p.id} FC: Δ={delta_fc:.1f} > ε={p.eps_fc} → Coleta imediata | IC: {p.ic_fc}s→{base_ic_fc}s")
+                        p.last_fc_col = 0
+                        p.ic_fc = base_ic_fc
+                        p.t_sdt_fc = base_t_sdt_fc
+                        p.stable_fc = 0
+                    
+                    # Check SpO2
+                    delta_spo2 = abs(v['spo2'] - p.last_sent_spo2)
+                    if delta_spo2 > p.eps_spo2:
+                        base_ic_spo2 = PARAMS[p.risk]['ic_spo2']
+                        base_t_sdt_spo2 = PARAMS[p.risk]['t_sdt_spo2']
+                        log.warning(f"[VIGILÂNCIA] {p.id} SpO2: Δ={delta_spo2:.1f} > ε={p.eps_spo2} → Coleta imediata | IC: {p.ic_spo2}s→{base_ic_spo2}s")
+                        p.last_spo2_col = 0
+                        p.ic_spo2 = base_ic_spo2
+                        p.t_sdt_spo2 = base_t_sdt_spo2
+                        p.stable_spo2 = 0
+                
+                last_keep = now
             for p in patients:
                 v=p.next(); p.fc_buf.append((v['timestamp'],v['hr'])); p.spo2_buf.append((v['timestamp'],v['spo2']))
                 
