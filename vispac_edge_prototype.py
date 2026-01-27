@@ -639,10 +639,10 @@ def get_initial_vitals_moderate_risk():
 
 # ------------- Algorithm 1 Parameters ------------
 PARAMS={
- "HIGH":     dict(ic_fc=15,  eps_fc=2,  dc_fc=2,  ic_spo2=15,  eps_spo2=1, dc_spo2=1, t_sdt=15,  ic_max=30*60),
- "MODERATE": dict(ic_fc=120, eps_fc=5,  dc_fc=5,  ic_spo2=120, eps_spo2=1, dc_spo2=1, t_sdt=60,  ic_max=30*60),
- "LOW":      dict(ic_fc=300, eps_fc=5,  dc_fc=5,  ic_spo2=300, eps_spo2=2, dc_spo2=2, t_sdt=180, ic_max=2*3600),
- "MINIMAL":  dict(ic_fc=600, eps_fc=10, dc_fc=10, ic_spo2=600, eps_spo2=3, dc_spo2=3, t_sdt=300, ic_max=6*3600)
+ "HIGH":     dict(ic_fc=15,  eps_fc=2,  dc_fc=2,  ic_spo2=15,  eps_spo2=1, dc_spo2=1, t_sdt_fc=30,   t_sdt_spo2=30,   ic_max=30*60),
+ "MODERATE": dict(ic_fc=120, eps_fc=5,  dc_fc=5,  ic_spo2=180, eps_spo2=1, dc_spo2=1, t_sdt_fc=240,  t_sdt_spo2=360,  ic_max=30*60),
+ "LOW":      dict(ic_fc=300, eps_fc=5,  dc_fc=5,  ic_spo2=600, eps_spo2=2, dc_spo2=2, t_sdt_fc=600,  t_sdt_spo2=1200, ic_max=2*3600),
+ "MINIMAL":  dict(ic_fc=600, eps_fc=10, dc_fc=10, ic_spo2=900, eps_spo2=3, dc_spo2=3, t_sdt_fc=1200, t_sdt_spo2=1800, ic_max=6*3600)
 }
 
 # --------------- Classes --------------------
@@ -766,8 +766,9 @@ class Patient:
             p = PARAMS["MINIMAL"]  # Use default params for backoff thresholds
             self.eps_fc, self.eps_spo2 = p['eps_fc'], p['eps_spo2']
             self.dc_fc, self.dc_spo2 = p['dc_fc'], p['dc_spo2']
-            # Use fixed t_sdt if specified (scenario 2 uses t_sdt=5 as per VSAC original)
-            self.t_sdt = scenario_cfg.get("fixed_t_sdt", p['t_sdt'])
+            # Scenario 2 uses t_sdt=5 as per VSAC original (applied to both)
+            self.t_sdt_fc = scenario_cfg.get("fixed_t_sdt", p['t_sdt_fc'])
+            self.t_sdt_spo2 = scenario_cfg.get("fixed_t_sdt", p['t_sdt_spo2'])
             self.ic_max = p['ic_max']
         else:
             # Scenario 3: Use risk-based intervals from PARAMS
@@ -783,9 +784,14 @@ class Patient:
                 # Reset stable counters when risk changes
                 self.stable_fc = 0
                 self.stable_spo2 = 0
+                
+                # Reset t_sdt to base values (2 * IC)
+                self.t_sdt_fc, self.t_sdt_spo2 = p['t_sdt_fc'], p['t_sdt_spo2']
+                
             self.eps_fc, self.eps_spo2 = p['eps_fc'], p['eps_spo2']
             self.dc_fc, self.dc_spo2 = p['dc_fc'], p['dc_spo2']
-            self.t_sdt, self.ic_max = p['t_sdt'], p['ic_max']
+            self.ic_max = p['ic_max']
+            # If risk didn't change, we keep current t_sdt values (which might have been increased by backoff)
         
         # Dynamic adaptation (backoff) only for scenario 3
         if not scenario_cfg["dynamic_adaptation"]:
@@ -823,7 +829,9 @@ class Patient:
         p=PARAMS[self.risk]
         self.eps_fc,self.eps_spo2=p['eps_fc'],p['eps_spo2']
         self.dc_fc,self.dc_spo2=p['dc_fc'],p['dc_spo2']
-        self.t_sdt,self.ic_max=p['t_sdt'],p['ic_max']
+        self.ic_max=p['ic_max']
+        # Note: t_sdt is not reset here to avoid overwriting backoff adjustments 
+        # unless risk changes (handled above)
 
     def backoff(self, sig, latest):
         """Algoritmo de Backoff Exponencial Condicionado ao Risco.
@@ -847,14 +855,18 @@ class Patient:
             eps = self.eps_fc
             st_attr = 'stable_fc'
             ic_attr = 'ic_fc'
+            tsdt_attr = 't_sdt_fc'
             last_attr = 'last_sent_fc'
             base_ic = PARAMS[self.risk]['ic_fc']
+            base_t_sdt = PARAMS[self.risk]['t_sdt_fc']
         else:
             eps = self.eps_spo2
             st_attr = 'stable_spo2'
             ic_attr = 'ic_spo2'
+            tsdt_attr = 't_sdt_spo2'
             last_attr = 'last_sent_spo2'
             base_ic = PARAMS[self.risk]['ic_spo2']
+            base_t_sdt = PARAMS[self.risk]['t_sdt_spo2']
         
         st = getattr(self, st_attr)
         cur_ic = getattr(self, ic_attr)
@@ -867,6 +879,7 @@ class Patient:
                 log.debug(f"[BACKOFF HIGH] {self.id} {sig.upper()} reset (risco=HIGH)")
             setattr(self, st_attr, 0)
             setattr(self, ic_attr, base_ic)
+            setattr(self, tsdt_attr, base_t_sdt)
             setattr(self, last_attr, latest)
             return
         
@@ -878,9 +891,10 @@ class Patient:
         else:
             # Leitura instável: reseta contador e intervalo para IC_base
             if cur_ic != base_ic:
-                log.info(f"[BACKOFF RESET] {self.id} {sig.upper()} {cur_ic}s→{base_ic}s (Δ={delta:.1f} > ε={eps})")
+                log.info(f"[BACKOFF RESET] {self.id} {sig.upper()} IC: {cur_ic}s→{base_ic}s | T_SDT: →{base_t_sdt}s (Δ={delta:.1f} > ε={eps})")
             setattr(self, st_attr, 0)
             setattr(self, ic_attr, base_ic)
+            setattr(self, tsdt_attr, base_t_sdt)
             setattr(self, last_attr, latest)
             return  # Retorna imediatamente conforme o algoritmo
         
@@ -891,7 +905,10 @@ class Patient:
             new_ic = min(cur_ic * 2, ic_max)
             
             if new_ic > cur_ic:
-                log.info(f"[BACKOFF] {self.id} {sig.upper()} {cur_ic}s→{new_ic}s (stable_count={st})")
+                # Dynamic update of t_sdt to match 2x new IC
+                new_t_sdt = max(base_t_sdt, new_ic * 2)
+                setattr(self, tsdt_attr, new_t_sdt)
+                log.info(f"[BACKOFF] {self.id} {sig.upper()} {cur_ic}s→{new_ic}s (stable_count={st}) | t_sdt→{new_t_sdt}s")
             
             setattr(self, ic_attr, new_ic)
             setattr(self, st_attr, 0)  # Reseta contador após aplicar backoff
@@ -1261,7 +1278,7 @@ def main():
                     
                     # Apply compression based on scenario
                     if scenario_cfg["compression_enabled"]:
-                        comp=sdt.compress(p.fc_buf,p.dc_fc,p.t_sdt)
+                        comp=sdt.compress(p.fc_buf,p.dc_fc,p.t_sdt_fc)
                     else:
                         # No compression - send raw data
                         comp = p.fc_buf if p.fc_buf else None
@@ -1296,7 +1313,7 @@ def main():
                     
                     # Apply compression based on scenario
                     if scenario_cfg["compression_enabled"]:
-                        comp=sdt.compress(p.spo2_buf,p.dc_spo2,p.t_sdt)
+                        comp=sdt.compress(p.spo2_buf,p.dc_spo2,p.t_sdt_spo2)
                     else:
                         # No compression - send raw data
                         comp = p.spo2_buf if p.spo2_buf else None
