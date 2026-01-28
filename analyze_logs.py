@@ -66,6 +66,7 @@ class EdgeMetrics:
     prd_values: List[float] = field(default_factory=list)
     prd_by_risk: Dict[str, List[float]] = field(default_factory=lambda: {'HIGH': [], 'MODERATE': [], 'LOW': [], 'MINIMAL': []})
     latencies: List[float] = field(default_factory=list)
+    latency_by_risk: Dict[str, List[float]] = field(default_factory=lambda: {'HIGH': [], 'MODERATE': [], 'LOW': [], 'MINIMAL': []})
     risk_distribution: Dict[str, int] = field(default_factory=dict)
     # Track current risk per patient for PRD correlation
     current_patient_risk: Dict[str, str] = field(default_factory=dict)
@@ -81,7 +82,7 @@ class EdgeMetrics:
     # Resource metrics
     cpu_samples: List[float] = field(default_factory=list)
     memory_samples: List[float] = field(default_factory=list)
-    
+
     @property
     def avg_compression(self) -> float:
         return sum(self.compression_ratios) / len(self.compression_ratios) if self.compression_ratios else 0.0
@@ -166,7 +167,7 @@ class LogParser:
         ),
         # [MQTT SEND] edge-01 | Batch 'HIGH' | 5 pkts | 1234b→567b (54.1%) | lzw | 12.5ms
         'send': re.compile(
-            r'\[(MQTT )?SEND\]\s+(\S+)\s+\|.*?(\d+)b→(\d+)b.*?\|.*?(\d+\.?\d*)ms'
+            r"\[(MQTT )?SEND\]\s+(\S+)\s+\|\s*Batch\s+'(\w+)'\s+\|.*?(\d+)b→(\d+)b.*?\|.*?(\d+\.?\d*)ms"
         ),
         # [RISK] 6: LOW → HIGH (NEWS2=8) [DYNAMIC] or [RISK] 26: N/A → HIGH (NEWS2=7) [DYNAMIC]
         'risk': re.compile(
@@ -198,6 +199,10 @@ class LogParser:
         # [INTERVAL RESET] 2: risco MINIMAL→LOW | HR: 1200s→300s | SPO2: 1800s→600s
         'interval_reset': re.compile(
             r'\[INTERVAL RESET\]\s+(\S+):\s+risco\s+(\w+)→(\w+)\s+\|\s+HR:\s+(\d+)s→(\d+)s\s+\|\s+SPO2:\s+(\d+)s→(\d+)s'
+        ),
+        # [VIGILÂNCIA] 5 FC: Δ=15.0 > ε=10 → Coleta imediata | IC: 600s→600s
+        'vigilance': re.compile(
+            r'\[VIGILÂNCIA\]\s+(\S+)\s+(FC|SpO2):\s+Δ=(\d+\.?\d*)\s*>\s*ε=(\d+\.?\d*)\s+→\s+Coleta imediata\s+\|\s+IC:\s+(\d+)s→(\d+)s'
         ),
         # Fog/Cloud Metrics (New)
         'fog_metrics': re.compile(
@@ -316,7 +321,7 @@ class LogParser:
             # Update current risk for PRD correlation (important for Static scenario)
             metrics.current_patient_risk[patient_id] = risk
             return
-        
+
         # Try to match raw collection (scenario 1)
         match = self.PATTERNS['collect_raw'].search(line)
         if match:
@@ -345,8 +350,13 @@ class LogParser:
         match = self.PATTERNS['send'].search(line)
         if match:
             groups = match.groups()
+            # Groups: (mqtt_prefix, edge_id, risk, raw_size, compressed_size, latency)
+            batch_risk = groups[2].upper()  # 'HIGH', 'MODERATE', 'LOW', 'MINIMAL'
             latency = float(groups[-1])  # Last group is always latency
             metrics.latencies.append(latency)
+            # Categorize latency by batch risk level
+            if batch_risk in metrics.latency_by_risk:
+                metrics.latency_by_risk[batch_risk].append(latency)
             
             # Also extract NEWS2 scores from this send
             scores_match = self.PATTERNS['scores'].search(line)
@@ -433,17 +443,37 @@ class LogParser:
             match = self.PATTERNS['interval_reset'].search(line)
             if match:
                 patient_id, old_risk, new_risk, hr_old, hr_new, spo2_old, spo2_new = match.groups()
+                event_timestamp = self.current_timestamp or datetime.now()
+
                 if patient_id not in metrics.patient_backoff_history:
                     metrics.patient_backoff_history[patient_id] = []
                 # Add HR reset event
                 metrics.patient_backoff_history[patient_id].append(
-                    (self.current_timestamp or datetime.now(), 'HR', int(hr_old), int(hr_new),
+                    (event_timestamp, 'HR', int(hr_old), int(hr_new),
                      'interval_reset', {'old_risk': old_risk, 'new_risk': new_risk})
                 )
                 # Add SPO2 reset event
                 metrics.patient_backoff_history[patient_id].append(
-                    (self.current_timestamp or datetime.now(), 'SPO2', int(spo2_old), int(spo2_new),
+                    (event_timestamp, 'SPO2', int(spo2_old), int(spo2_new),
                      'interval_reset', {'old_risk': old_risk, 'new_risk': new_risk})
+                )
+                return
+            
+            # [VIGILÂNCIA] events - map to backoff_reset for visualization
+            match = self.PATTERNS['vigilance'].search(line)
+            if match:
+                patient_id, signal_raw, delta, epsilon, old_interval, new_interval = match.groups()
+                
+                # Normalize signal name
+                signal = 'HR' if signal_raw == 'FC' else 'SPO2'
+                
+                if patient_id not in metrics.patient_backoff_history:
+                    metrics.patient_backoff_history[patient_id] = []
+                
+                # We use 'backoff_reset' type so it appears as Alg.3 in the chart
+                metrics.patient_backoff_history[patient_id].append(
+                    (self.current_timestamp or datetime.now(), signal, int(old_interval), int(new_interval),
+                     'backoff_reset', {'delta': float(delta), 'epsilon': float(epsilon)})
                 )
                 return
     
@@ -485,11 +515,12 @@ class LogParser:
         all_cpu = []
         all_memory = []
         all_prd_by_risk = {'HIGH': [], 'MODERATE': [], 'LOW': [], 'MINIMAL': []}
+        all_latency_by_risk = {'HIGH': [], 'MODERATE': [], 'LOW': [], 'MINIMAL': []}
         total_raw = 0
         total_compressed = 0
         total_transmissions = 0
         total_risk_events = 0
-        
+
         for m in self.metrics.values():
             all_compression.extend(m.compression_ratios)
             all_prd.extend(m.prd_values)
@@ -503,6 +534,7 @@ class LogParser:
             # Aggregate PRD by risk
             for risk_level in ['HIGH', 'MODERATE', 'LOW', 'MINIMAL']:
                 all_prd_by_risk[risk_level].extend(m.prd_by_risk.get(risk_level, []))
+                all_latency_by_risk[risk_level].extend(m.latency_by_risk.get(risk_level, []))
         
         def safe_avg(lst):
             return sum(lst) / len(lst) if lst else 0.0
@@ -540,6 +572,8 @@ class LogParser:
             'max_cpu': safe_max(all_cpu),
             'avg_memory': safe_avg(all_memory),
             'max_memory': safe_max(all_memory),
+            'min_latency': safe_min(all_latency),
+            'max_latency': safe_max(all_latency),
             # PRD by risk level
             'prd_by_risk': {
                 'HIGH': safe_avg(all_prd_by_risk.get('HIGH', [])),
@@ -553,6 +587,19 @@ class LogParser:
                 'MODERATE': len(all_prd_by_risk.get('MODERATE', [])),
                 'LOW': len(all_prd_by_risk.get('LOW', [])),
                 'MINIMAL': len(all_prd_by_risk.get('MINIMAL', [])),
+            },
+            # Latency by risk level (round-trip time for each batch risk type)
+            'latency_by_risk': {
+                'HIGH': safe_avg(all_latency_by_risk.get('HIGH', [])),
+                'MODERATE': safe_avg(all_latency_by_risk.get('MODERATE', [])),
+                'LOW': safe_avg(all_latency_by_risk.get('LOW', [])),
+                'MINIMAL': safe_avg(all_latency_by_risk.get('MINIMAL', [])),
+            },
+            'latency_count_by_risk': {
+                'HIGH': len(all_latency_by_risk.get('HIGH', [])),
+                'MODERATE': len(all_latency_by_risk.get('MODERATE', [])),
+                'LOW': len(all_latency_by_risk.get('LOW', [])),
+                'MINIMAL': len(all_latency_by_risk.get('MINIMAL', [])),
             },
         }
     
@@ -654,12 +701,27 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
     """Generate interactive HTML dashboard with charts."""
     
     # Prepare data for charts
-    scenario_names = [s['scenario'] for s in summaries]
+    # Prepare data for charts with fixed scenario names
+    scenario_map = {
+        'scenario1_baseline': 'Cenário 1',
+        'scenario2_static': 'Cenário 2',
+        'scenario3_vispac': 'Cenário 3'
+    }
+    # Fallback to simple formatting if not in map
+    scenario_names = [scenario_map.get(s['scenario'], s['scenario'].replace('scenario', 'Cenário ').replace('_', ' ')) for s in summaries]
+    compression_data = [s.get('overall_compression', 0) for s in summaries]
+    prd_data = [s.get('avg_prd', 0) for s in summaries]
+    latency_data = [s.get('avg_latency', 0) for s in summaries]
+    cpu_data = [s.get('avg_cpu', 0) for s in summaries]
     compression_data = [s.get('overall_compression', 0) for s in summaries]
     prd_data = [s.get('avg_prd', 0) for s in summaries]
     latency_data = [s.get('avg_latency', 0) for s in summaries]
     cpu_data = [s.get('avg_cpu', 0) for s in summaries]
     memory_data = [s.get('avg_memory', 0) for s in summaries]
+    
+    # New data for Comparative Chart (Transmissions & Volume)
+    transmissions_data = [s.get('total_transmissions', 0) for s in summaries]
+    volume_data = [s.get('total_compressed_bytes', 0) / (1024 * 1024) for s in summaries]  # Convert to MB (after compression)
     
     # Get risk histories for scenario 3
     risk_histories = {}
@@ -669,10 +731,13 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
     fog_stats = []
     cloud_stats = []
     
-    for s_name in scenario_names:
-        parser = parsers.get(s_name)
+    # Use original scenario keys from summaries to access parsers
+    scenario_keys = [s['scenario'] for s in summaries]
+    
+    for s_key, s_name in zip(scenario_keys, scenario_names):
+        parser = parsers.get(s_key)
         if parser:
-            if 'vispac' in s_name:
+            if 'vispac' in s_key:
                 risk_histories = parser.get_all_risk_histories()
                 backoff_histories = parser.get_all_backoff_histories()
             
@@ -941,14 +1006,14 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
 </head>
 <body>
     <div class="header">
-        <h1>🏥 ViSPAC Dashboard</h1>
+        <h1>ViSPAC Dashboard</h1>
         <p>Análise de Resultados dos Experimentos - Monitoramento de Sinais Vitais em Edge Computing</p>
     </div>
     
     <div class="dashboard">
         <!-- Summary Cards -->
         <div class="card full-width">
-            <h2>📊 Resumo Comparativo</h2>
+            <h2>Resumo Comparativo</h2>
             <table>
                 <thead>
                     <tr>
@@ -998,6 +1063,22 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                         {''.join(f'<td>{s["avg_latency"]:.1f} ± {s["std_latency"]:.1f}</td>' for s in summaries)}
                     </tr>
                     <tr>
+                        <td style="padding-left: 20px; font-size: 0.9em; color: #ff4444;">↳ Latência Risco Alto (ms)</td>
+                        {''.join(f'<td>{s.get("latency_by_risk", {}).get("HIGH", 0):.1f} <span style="opacity:0.6">(n={s.get("latency_count_by_risk", {}).get("HIGH", 0):,})</span></td>' for s in summaries)}
+                    </tr>
+                    <tr>
+                        <td style="padding-left: 20px; font-size: 0.9em; color: #ffaa00;">↳ Latência Risco Moderado (ms)</td>
+                        {''.join(f'<td>{s.get("latency_by_risk", {}).get("MODERATE", 0):.1f} <span style="opacity:0.6">(n={s.get("latency_count_by_risk", {}).get("MODERATE", 0):,})</span></td>' for s in summaries)}
+                    </tr>
+                    <tr>
+                        <td style="padding-left: 20px; font-size: 0.9em; color: #00d4ff;">↳ Latência Risco Baixo (ms)</td>
+                        {''.join(f'<td>{s.get("latency_by_risk", {}).get("LOW", 0):.1f} <span style="opacity:0.6">(n={s.get("latency_count_by_risk", {}).get("LOW", 0):,})</span></td>' for s in summaries)}
+                    </tr>
+                    <tr>
+                        <td style="padding-left: 20px; font-size: 0.9em; color: #00ff88;">↳ Latência Risco Mínimo (ms)</td>
+                        {''.join(f'<td>{s.get("latency_by_risk", {}).get("MINIMAL", 0):.1f} <span style="opacity:0.6">(n={s.get("latency_count_by_risk", {}).get("MINIMAL", 0):,})</span></td>' for s in summaries)}
+                    </tr>
+                    <tr>
                         <td>CPU Média (%)</td>
                         {''.join(f'<td>{s["avg_cpu"]:.1f}%</td>' if s["avg_cpu"] > 0 else '<td>N/A</td>' for s in summaries)}
                     </tr>
@@ -1007,11 +1088,20 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                     </tr>
                 </tbody>
             </table>
+            <p style="font-size: 0.8em; color: var(--text-secondary); margin-top: 10px;">* <strong>n</strong> = número de amostras coletadas para cálculo da métrica</p>
+        </div>
+        
+        <!-- Transmissions vs Volume Chart (New) -->
+        <div class="card full-width">
+            <h2>Comparativo de Transmissões e Volume</h2>
+            <div class="chart-container">
+                <canvas id="transmissionsChart"></canvas>
+            </div>
         </div>
         
         <!-- Compression Chart -->
         <div class="card">
-            <h2>📉 Taxa de Compressão</h2>
+            <h2>Taxa de Compressão</h2>
             <div class="chart-container">
                 <canvas id="compressionChart"></canvas>
             </div>
@@ -1019,7 +1109,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
         
         <!-- Latency Chart -->
         <div class="card">
-            <h2>⏱️ Latência de Transmissão</h2>
+            <h2>Latência de Transmissão</h2>
             <div class="chart-container">
                 <canvas id="latencyChart"></canvas>
             </div>
@@ -1027,7 +1117,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
         
         <!-- PRD Chart -->
         <div class="card">
-            <h2>📈 Distorção do Sinal (PRD)</h2>
+            <h2>Distorção do Sinal (PRD)</h2>
             <div class="chart-container">
                 <canvas id="prdChart"></canvas>
             </div>
@@ -1035,7 +1125,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
         
         <!-- CPU Usage Chart -->
         <div class="card">
-            <h2>🖥️ Uso de CPU</h2>
+            <h2>Uso de CPU</h2>
             <div class="chart-container">
                 <canvas id="cpuChart"></canvas>
             </div>
@@ -1043,23 +1133,23 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
         
         <!-- Memory Usage Chart -->
         <div class="card">
-            <h2>💾 Uso de Memória</h2>
+            <h2>Uso de Memória</h2>
             <div class="chart-container">
                 <canvas id="memoryChart"></canvas>
             </div>
         </div>
         
         <!-- Risk Evolution (Scenario 3 only) -->
-        {'<div class="card full-width"><h2>🔄 Evolução do Risco dos Pacientes (Cenário 3)</h2><div><label for="patientSelect">Selecione o Paciente:</label><select id="patientSelect" onchange="updateRiskChart()"></select></div><div class="chart-container" style="height: 400px;"><canvas id="riskEvolutionChart"></canvas></div></div>' if risk_histories else ''}
+        {'<div class="card full-width"><h2>Evolução do Risco dos Pacientes (Cenário 3)</h2><div><label for="patientSelect">Selecione o Paciente:</label><select id="patientSelect" onchange="updateRiskChart()"></select></div><div class="chart-container" style="height: 400px;"><canvas id="riskEvolutionChart"></canvas></div></div>' if risk_histories else ''}
         
         <!-- Backoff/Collection Interval Evolution (Scenario 3 only) -->
-        {'<div class="card full-width"><h2>⏱️ Evolução do Intervalo de Coleta (Algoritmos 2 e 3)</h2><div style="display: flex; flex-wrap: wrap; align-items: center; gap: 20px; margin-bottom: 15px;"><div><label for="backoffPatientSelect">Selecione o Paciente:</label><select id="backoffPatientSelect" onchange="updateBackoffCharts()"></select></div><div style="font-size: 0.85em; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: 15px;"><span title="Algoritmo 2: Intervalo dobrou após K=3 leituras estáveis" style="cursor: help;"><span style="display: inline-block; width: 12px; height: 12px; background: #22c55e; border-radius: 50%; margin-right: 4px;"></span>⬆ Backoff Exponencial (Alg. 2)</span><span title="Algoritmo 3: Vigilância detectou variação anômala e disparou reset" style="cursor: help;"><span style="display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 12px solid #f59e0b; margin-right: 4px;"></span>⬇ Vigilância Contínua (Alg. 3)</span><span title="Reset por mudança de nível de risco do paciente" style="cursor: help;"><span style="display: inline-block; width: 10px; height: 10px; background: #dc2626; transform: rotate(45deg); margin-right: 6px;"></span>⬇ Mudança de Risco</span></div></div><div style="font-size: 0.8em; color: var(--text-secondary); margin-bottom: 15px; background: rgba(0,0,0,0.03); padding: 10px; border-radius: 6px;"><p style="margin: 0 0 5px 0;"><strong style="color: #22c55e;">● Algoritmo 2 (Backoff Exponencial):</strong> Após K=3 leituras estáveis (|v - v<sub>últ</sub>| ≤ ε), o intervalo de coleta dobra até IC<sub>max</sub>.</p><p style="margin: 0 0 5px 0;"><strong style="color: #f59e0b;">▲ Algoritmo 3 (Vigilância Contínua):</strong> Quando |v - v<sub>últ</sub>| > ε, detecta variação anômala e reseta o intervalo para IC<sub>base</sub>.</p><p style="margin: 0;"><strong style="color: #dc2626;">◆ Mudança de Risco:</strong> Quando o NEWS2 muda o nível de risco, os intervalos são resetados para os valores do novo nível.</p></div><h3 style="font-size: 1em; color: var(--accent); margin-bottom: 5px;">❤️ Frequência Cardíaca (HR)</h3><div class="chart-container" style="height: 250px;"><canvas id="backoffChartHR"></canvas></div><h3 style="font-size: 1em; color: var(--accent); margin: 15px 0 5px 0;">🫁 Saturação de Oxigênio (SpO2)</h3><div class="chart-container" style="height: 250px;"><canvas id="backoffChartSpO2"></canvas></div></div>' if backoff_histories else ''}
+        {'<div class="card full-width"><h2>Evolução do Intervalo de Coleta (Algoritmos 2 e 3)</h2><div style="display: flex; flex-wrap: wrap; align-items: center; gap: 20px; margin-bottom: 15px;"><div><label for="backoffPatientSelect">Selecione o Paciente:</label><select id="backoffPatientSelect" onchange="updateBackoffCharts()"></select></div><div style="font-size: 0.85em; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: 15px;"><span title="Algoritmo 2: Intervalo dobrou após K=3 leituras estáveis" style="cursor: help;"><span style="display: inline-block; width: 12px; height: 12px; background: #22c55e; border-radius: 50%; margin-right: 4px;"></span>Backoff Exponencial (Alg. 2)</span><span title="Algoritmo 3: Vigilância detectou variação anômala e disparou reset" style="cursor: help;"><span style="display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 12px solid #f59e0b; margin-right: 4px;"></span>Vigilância Contínua (Alg. 3)</span><span title="Reset por mudança de nível de risco do paciente" style="cursor: help;"><span style="display: inline-block; width: 10px; height: 10px; background: #dc2626; transform: rotate(45deg); margin-right: 6px;"></span>Mudança de Risco</span></div></div><div style="font-size: 0.8em; color: var(--text-secondary); margin-bottom: 15px; background: rgba(0,0,0,0.03); padding: 10px; border-radius: 6px;"><p style="margin: 0 0 5px 0;"><strong style="color: #22c55e;">Algoritmo 2 (Backoff Exponencial):</strong> Após K=3 leituras estáveis (|v - v<sub>últ</sub>| ≤ ε), o intervalo de coleta dobra até IC<sub>max</sub>.</p><p style="margin: 0 0 5px 0;"><strong style="color: #f59e0b;">Algoritmo 3 (Vigilância Contínua):</strong> Quando |v - v<sub>últ</sub>| > ε, detecta variação anômala e reseta o intervalo para IC<sub>base</sub>.</p><p style="margin: 0;"><strong style="color: #dc2626;">Mudança de Risco:</strong> Quando o NEWS2 muda o nível de risco, os intervalos são resetados para os valores do novo nível.</p></div><h3 style="font-size: 1em; color: var(--accent); margin-bottom: 5px;">Frequência Cardíaca (HR)</h3><div class="chart-container" style="height: 250px;"><canvas id="backoffChartHR"></canvas></div><h3 style="font-size: 1em; color: var(--accent); margin: 15px 0 5px 0;">Saturação de Oxigênio (SpO2)</h3><div class="chart-container" style="height: 250px;"><canvas id="backoffChartSpO2"></canvas></div></div>' if backoff_histories else ''}
         
         <!-- Fog & Cloud Comparison Tables -->
         <div class="card full-width">
-            <h2>☁️ Comparativo Fog & Cloud por Cenário</h2>
+            <h2>Comparativo Fog & Cloud por Cenário</h2>
             
-            <h3 style="margin-top: 20px; color: var(--accent);">📊 Métricas Fog</h3>
+            <h3 style="margin-top: 20px; color: var(--accent);">Métricas Fog</h3>
             <table class="comparison-table">
                 <thead>
                     <tr>
@@ -1072,7 +1162,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 </tbody>
             </table>
             
-            <h3 style="margin-top: 30px; color: var(--accent);">📊 Métricas Cloud</h3>
+            <h3 style="margin-top: 30px; color: var(--accent);">Métricas Cloud</h3>
             <table class="comparison-table">
                 <thead>
                     <tr>
@@ -1086,7 +1176,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 </tbody>
             </table>
             
-            <h3 style="margin-top: 30px; color: var(--accent);">📈 Economia vs Baseline</h3>
+            <h3 style="margin-top: 30px; color: var(--accent);">Economia vs Baseline</h3>
             <table class="comparison-table">
                 <thead>
                     <tr>
@@ -1102,12 +1192,12 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
         
         <!-- Metrics Explanation Section -->
         <div class="card full-width" style="background: linear-gradient(135deg, rgba(0,119,182,0.05) 0%, rgba(114,9,183,0.05) 100%); border-left: 4px solid var(--accent);">
-            <h2 style="margin-top: 0; color: var(--accent);">📖 Explicação das Métricas Calculadas</h2>
+            <h2 style="margin-top: 0; color: var(--accent);">Explicação das Métricas Calculadas</h2>
             
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 20px;">
                 <!-- Latência Processamento -->
                 <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #00ff88;">
-                    <h3 style="margin-top: 0; color: #00ff88; font-size: 0.95em;">⚡ Latência Processamento (ms)</h3>
+                    <h3 style="margin-top: 0; color: #00ff88; font-size: 0.95em;">Latência Processamento (ms)</h3>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Tempo decorrido na camada Fog para descompactar um batch, calcular o escore NEWS2 e validar os sinais vitais.</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> Timestamp de saída da descompactação - Timestamp de entrada do batch (em milissegundos).</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Impacto direto na responsividade do sistema para detecção de eventos críticos.</p>
@@ -1115,7 +1205,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 
                 <!-- Latência Forward -->
                 <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #00d4ff;">
-                    <h3 style="margin-top: 0; color: #00d4ff; font-size: 0.95em;">📤 Latência Forward (ms)</h3>
+                    <h3 style="margin-top: 0; color: #00d4ff; font-size: 0.95em;">Latência Forward (ms)</h3>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Tempo total para encaminhar dados comprimidos da Fog para a Cloud, incluindo transmissão de rede.</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> Timestamp de envio da Fog - Timestamp de recepção confirmada pela Cloud (em milissegundos).</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Mede efetivamente como a compressão e adaptação reduzem a sobrecarga de rede.</p>
@@ -1123,7 +1213,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 
                 <!-- Redução Items Cloud -->
                 <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #ffaa00;">
-                    <h3 style="margin-top: 0; color: #ffaa00; font-size: 0.95em;">🗄️ Redução Items Cloud (%)</h3>
+                    <h3 style="margin-top: 0; color: #ffaa00; font-size: 0.95em;">Redução Items Cloud (%)</h3>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Percentual de redução no volume de pontos de dados armazenados na Cloud em relação ao baseline (Cenário 1).</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> (1 - Items_Cenário_N / Items_Baseline) × 100%</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Demonstra economia de armazenamento e redução de operações I/O no banco de dados.</p>
@@ -1131,7 +1221,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 
                 <!-- Melhoria Latência Forward -->
                 <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #7b2cbf;">
-                    <h3 style="margin-top: 0; color: #7b2cbf; font-size: 0.95em;">🚀 Melhoria Latência Forward (%)</h3>
+                    <h3 style="margin-top: 0; color: #7b2cbf; font-size: 0.95em;">Melhoria Latência Forward (%)</h3>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Percentual de redução na latência de encaminhamento Fog→Cloud em relação ao baseline.</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> (1 - LatFwd_Cenário_N / LatFwd_Baseline) × 100%</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Impacto da compressão adaptativa na redução do tempo de transmissão.</p>
@@ -1139,7 +1229,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 
                 <!-- Compressão -->
                 <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #22c55e;">
-                    <h3 style="margin-top: 0; color: #22c55e; font-size: 0.95em;">📦 Compressão (%)</h3>
+                    <h3 style="margin-top: 0; color: #22c55e; font-size: 0.95em;">Compressão (%)</h3>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Razão de compressão média em relação aos dados brutos.</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> (1 - Bytes_Comprimidos / Bytes_Brutos) × 100%</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Efetividade do algoritmo de compressão (SDT + Huffman/LZW).</p>
@@ -1147,19 +1237,27 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 
                 <!-- PRD -->
                 <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #ec4899;">
-                    <h3 style="margin-top: 0; color: #ec4899; font-size: 0.95em;">📈 Distorção Percentual (PRD, %)</h3>
+                    <h3 style="margin-top: 0; color: #ec4899; font-size: 0.95em;">Distorção Percentual (PRD, %)</h3>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Erro relativo introduzido pela compressão em relação aos valores originais.</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> √(Σ(valor_original - valor_reconstruído)² / Σ(valor_original)²) × 100%</p>
                     <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Valida qualidade do sinal após descompactação (< 2% para uso clínico).</p>
                 </div>
+                
+                <!-- Latência Média -->
+                <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #0ea5e9;">
+                    <h3 style="margin-top: 0; color: #0ea5e9; font-size: 0.95em;">Latência Média (ms)</h3>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Tempo de ida e volta (round-trip) entre o envio de um batch pelo Edge e o recebimento da resposta da Fog com os escores NEWS2.</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> Timestamp de recebimento da resposta - Timestamp de início do envio (em milissegundos).</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Mede o tempo total do ciclo de feedback, desde a transmissão até o recebimento do risco atualizado para ajuste dinâmico.</p>
+                </div>
             </div>
             
             <div style="margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.05); border-radius: 6px; font-size: 0.9em; color: var(--text-secondary);">
-                <strong style="color: var(--text-primary);">📌 Notas de Cálculo:</strong>
+                <strong style="color: var(--text-primary);">Notas de Cálculo:</strong>
                 <ul style="margin: 10px 0 0 15px; line-height: 1.6;">
-                    <li><strong>Cenário 1 (Baseline):</strong> Sem compressão, coleta em intervalos fixos de 1s. Todos os valores = 0% de economia.</li>
-                    <li><strong>Cenário 2 (Static):</strong> Compressão fixa com SDT (t=5s) + Huffman, intervalos de coleta estáticos de 15s.</li>
-                    <li><strong>Cenário 3 (ViSPAC):</strong> Compressão adaptativa com algoritmos de backoff exponencial e vigilância contínua, intervalos dinâmicos por nível de risco.</li>
+                    <li><strong>Cenário 1:</strong> Sem compressão, coleta em intervalos fixos de 1s. Todos os valores = 0% de economia.</li>
+                    <li><strong>Cenário 2:</strong> Compressão fixa com SDT (t=5s) + Huffman, intervalos de coleta estáticos de 15s.</li>
+                    <li><strong>Cenário 3:</strong> Compressão adaptativa com algoritmos de backoff exponencial e vigilância contínua, intervalos dinâmicos por nível de risco.</li>
                     <li><strong>Agregação:</strong> Todas as métricas são médias ponderadas sobre todos os pacientes e dispositivos Edge durante todo o período de experimento.</li>
                     <li><strong>Baseline para Comparação:</strong> O Cenário 1 serve como referência (100% de dados brutos, latência máxima).</li>
                 </ul>
@@ -1182,6 +1280,8 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
         const prdData = {json.dumps(prd_data)};
         const cpuData = {json.dumps(cpu_data)};
         const memoryData = {json.dumps(memory_data)};
+        const transmissionsData = {json.dumps(transmissions_data)};
+        const volumeData = {json.dumps(volume_data)};
         const riskHistories = {json.dumps(risk_histories)};
         const backoffHistories = {json.dumps(backoff_histories)};
         const fogStats = {json.dumps(fog_stats)};
@@ -1202,6 +1302,107 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             'HIGH': 7
         }};
         
+        // Transmissions Chart (Mixed Bar/Line)
+        new Chart(document.getElementById('transmissionsChart').getContext('2d'), {{
+            type: 'bar',
+            data: {{
+                labels: scenarioNames,
+                datasets: [
+                    {{
+                        label: 'Número de Transmissões',
+                        data: transmissionsData,
+                        backgroundColor: 'rgba(0, 119, 182, 0.6)',
+                        borderColor: 'rgba(0, 119, 182, 1)',
+                        borderWidth: 1,
+                        order: 2,
+                        yAxisID: 'y'
+                    }},
+                    {{
+                        label: 'Volume Trafegado (MB)',
+                        data: volumeData,
+                        type: 'line',
+                        borderColor: '#ff9f1c',
+                        backgroundColor: '#ff9f1c',
+                        borderWidth: 3,
+                        pointBackgroundColor: '#fff',
+                        pointBorderColor: '#ff9f1c',
+                        pointRadius: 6,
+                        pointHoverRadius: 8,
+                        tension: 0.1,
+                        order: 1,
+                        yAxisID: 'y1'
+                    }}
+                ]
+            }},
+            options: {{
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {{
+                    mode: 'index',
+                    intersect: false,
+                }},
+                plugins: {{
+                    title: {{
+                        display: true,
+                        text: 'Redução Drástica de Transmissões e Volume de Dados',
+                        font: {{ size: 16 }}
+                    }},
+                    tooltip: {{
+                        callbacks: {{
+                            label: function (context) {{
+                                let label = context.dataset.label || '';
+                                if (label) {{
+                                    label += ': ';
+                                }}
+                                if (context.parsed.y !== null) {{
+                                    if (context.dataset.type === 'line') {{
+                                        label += context.parsed.y.toFixed(2) + ' MB';
+                                    }} else {{
+                                        label += new Intl.NumberFormat('pt-BR').format(context.parsed.y);
+                                    }}
+                                }}
+                                return label;
+                            }}
+                        }}
+                    }}
+                }},
+                scales: {{
+                    y: {{
+                        display: true,
+                        position: 'left',
+                        title: {{
+                            display: true,
+                            text: 'Número de Transmissões (log)',
+                            color: '#0077b6'
+                        }},
+                        type: 'logarithmic',
+                        grid: {{
+                            color: 'rgba(255,255,255,0.05)'
+                        }}
+                    }},
+                    y1: {{
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        title: {{
+                            display: true,
+                            text: 'Volume Trafegado (MB)',
+                            color: '#ff9f1c'
+                        }},
+                        grid: {{
+                            drawOnChartArea: false
+                        }},
+                        min: 0
+                    }},
+                    x: {{
+                        grid: {{
+                            display: false
+                        }}
+                    }}
+                }}
+            }}
+        }});
+
         // Compression Chart
         new Chart(document.getElementById('compressionChart'), {{
             type: 'bar',
@@ -1720,7 +1921,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             fogStats.forEach((fog, idx) => {{
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td>${{scenarioNames[idx].replace('scenario', 'Cenário ').replace('_', ' - ')}}</td>
+                    <td>${{scenarioNames[idx]}}</td>
                     <td>${{fog.avg_process_ms.toFixed(2)}}</td>
                     <td>${{fog.avg_forward_ms.toFixed(2)}}</td>
                 `;
@@ -1731,7 +1932,7 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             cloudStats.forEach((cloud, idx) => {{
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td>${{scenarioNames[idx].replace('scenario', 'Cenário ').replace('_', ' - ')}}</td>
+                    <td>${{scenarioNames[idx]}}</td>
                     <td>${{cloud.total_items.toLocaleString('pt-BR')}}</td>
                     <td>${{cloud.total_inserts ? cloud.total_inserts.toLocaleString('pt-BR') : 'N/A'}}</td>
                     <td>${{cloud.avg_insert_ms.toFixed(2)}}</td>
@@ -1892,16 +2093,35 @@ def main():
         print(f"SUMMARY: {scenario_name}")
         print('='*60)
         print(f"Edges: {summary['num_edges']}")
-        print(f"Transmissions: {summary['total_transmissions']}")
+        print(f"Transmissions: {summary['total_transmissions']:,}")
         print(f"Raw Data: {summary['total_raw_bytes']/1024/1024:.2f} MB")
         print(f"Compressed: {summary['total_compressed_bytes']/1024/1024:.2f} MB")
-        print(f"Compression: {summary['avg_compression']:.1f}% ± {summary['std_compression']:.1f}%")
-        print(f"PRD: {summary['avg_prd']:.4f}% ± {summary['std_prd']:.4f}%")
-        print(f"Latency: {summary['avg_latency']:.1f}ms ± {summary['std_latency']:.1f}ms")
+        print(f"Overall Compression: {summary['overall_compression']:.1f}%")
+        print(f"Avg Compression: {summary['avg_compression']:.1f}% ± {summary['std_compression']:.1f}%")
+        print(f"PRD (global): {summary['avg_prd']:.4f}% ± {summary['std_prd']:.4f}%")
+        # PRD by risk level
+        prd_by_risk = summary.get('prd_by_risk', {})
+        prd_count = summary.get('prd_count_by_risk', {})
+        for risk in ['HIGH', 'MODERATE', 'LOW', 'MINIMAL']:
+            prd_val = prd_by_risk.get(risk, 0)
+            n = prd_count.get(risk, 0)
+            if n > 0:
+                print(f"  PRD {risk}: {prd_val:.4f}% (n={n:,})")
+        print(f"Latency (global): {summary['avg_latency']:.1f}ms ± {summary['std_latency']:.1f}ms")
+        print(f"  Min: {summary.get('min_latency', 0):.1f}ms | Max: {summary.get('max_latency', 0):.1f}ms")
+        # Latency by risk level
+        lat_by_risk = summary.get('latency_by_risk', {})
+        lat_count = summary.get('latency_count_by_risk', {})
+        for risk in ['HIGH', 'MODERATE', 'LOW', 'MINIMAL']:
+            lat_val = lat_by_risk.get(risk, 0)
+            n = lat_count.get(risk, 0)
+            if n > 0:
+                print(f"  Latency {risk}: {lat_val:.1f}ms (n={n:,})")
         if summary['avg_cpu'] > 0:
             print(f"CPU: {summary['avg_cpu']:.1f}% (max: {summary['max_cpu']:.1f}%)")
         if summary['avg_memory'] > 0:
-            print(f"Memory: {summary['avg_memory']:.1f}MB (max: {summary['max_memory']:.1f}MB)")
+            print(f"Memory: {summary['avg_memory']:.1f}MB (max: {summary['max_memory']:.1f}MB)"
+        )
 
 
 if __name__ == '__main__':
