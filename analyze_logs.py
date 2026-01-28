@@ -1064,10 +1064,8 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 <thead>
                     <tr>
                         <th>Cenário</th>
-                        <th>Batches Processados</th>
                         <th>Latência Processamento (ms)</th>
                         <th>Latência Forward (ms)</th>
-                        <th>Throughput (batches/s)</th>
                     </tr>
                 </thead>
                 <tbody id="fogTableBody">
@@ -1093,7 +1091,6 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 <thead>
                     <tr>
                         <th>Cenário</th>
-                        <th>Redução Batches Fog</th>
                         <th>Redução Items Cloud</th>
                         <th>Melhoria Latência Forward</th>
                     </tr>
@@ -1101,6 +1098,72 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 <tbody id="savingsTableBody">
                 </tbody>
             </table>
+        </div>
+        
+        <!-- Metrics Explanation Section -->
+        <div class="card full-width" style="background: linear-gradient(135deg, rgba(0,119,182,0.05) 0%, rgba(114,9,183,0.05) 100%); border-left: 4px solid var(--accent);">
+            <h2 style="margin-top: 0; color: var(--accent);">📖 Explicação das Métricas Calculadas</h2>
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 20px;">
+                <!-- Latência Processamento -->
+                <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #00ff88;">
+                    <h3 style="margin-top: 0; color: #00ff88; font-size: 0.95em;">⚡ Latência Processamento (ms)</h3>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Tempo decorrido na camada Fog para descompactar um batch, calcular o escore NEWS2 e validar os sinais vitais.</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> Timestamp de saída da descompactação - Timestamp de entrada do batch (em milissegundos).</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Impacto direto na responsividade do sistema para detecção de eventos críticos.</p>
+                </div>
+                
+                <!-- Latência Forward -->
+                <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #00d4ff;">
+                    <h3 style="margin-top: 0; color: #00d4ff; font-size: 0.95em;">📤 Latência Forward (ms)</h3>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Tempo total para encaminhar dados comprimidos da Fog para a Cloud, incluindo transmissão de rede.</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> Timestamp de envio da Fog - Timestamp de recepção confirmada pela Cloud (em milissegundos).</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Mede efetivamente como a compressão e adaptação reduzem a sobrecarga de rede.</p>
+                </div>
+                
+                <!-- Redução Items Cloud -->
+                <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #ffaa00;">
+                    <h3 style="margin-top: 0; color: #ffaa00; font-size: 0.95em;">🗄️ Redução Items Cloud (%)</h3>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Percentual de redução no volume de pontos de dados armazenados na Cloud em relação ao baseline (Cenário 1).</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> (1 - Items_Cenário_N / Items_Baseline) × 100%</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Demonstra economia de armazenamento e redução de operações I/O no banco de dados.</p>
+                </div>
+                
+                <!-- Melhoria Latência Forward -->
+                <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #7b2cbf;">
+                    <h3 style="margin-top: 0; color: #7b2cbf; font-size: 0.95em;">🚀 Melhoria Latência Forward (%)</h3>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Percentual de redução na latência de encaminhamento Fog→Cloud em relação ao baseline.</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> (1 - LatFwd_Cenário_N / LatFwd_Baseline) × 100%</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Impacto da compressão adaptativa na redução do tempo de transmissão.</p>
+                </div>
+                
+                <!-- Compressão -->
+                <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #22c55e;">
+                    <h3 style="margin-top: 0; color: #22c55e; font-size: 0.95em;">📦 Compressão (%)</h3>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Razão de compressão média em relação aos dados brutos.</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> (1 - Bytes_Comprimidos / Bytes_Brutos) × 100%</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Efetividade do algoritmo de compressão (SDT + Huffman/LZW).</p>
+                </div>
+                
+                <!-- PRD -->
+                <div style="background: rgba(255,255,255,0.7); padding: 15px; border-radius: 8px; border-left: 3px solid #ec4899;">
+                    <h3 style="margin-top: 0; color: #ec4899; font-size: 0.95em;">📈 Distorção Percentual (PRD, %)</h3>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Definição:</strong> Erro relativo introduzido pela compressão em relação aos valores originais.</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Cálculo:</strong> √(Σ(valor_original - valor_reconstruído)² / Σ(valor_original)²) × 100%</p>
+                    <p style="margin: 10px 0 0 0; font-size: 0.85em; color: var(--text-secondary);"><strong>Relevância:</strong> Valida qualidade do sinal após descompactação (< 2% para uso clínico).</p>
+                </div>
+            </div>
+            
+            <div style="margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.05); border-radius: 6px; font-size: 0.9em; color: var(--text-secondary);">
+                <strong style="color: var(--text-primary);">📌 Notas de Cálculo:</strong>
+                <ul style="margin: 10px 0 0 15px; line-height: 1.6;">
+                    <li><strong>Cenário 1 (Baseline):</strong> Sem compressão, coleta em intervalos fixos de 1s. Todos os valores = 0% de economia.</li>
+                    <li><strong>Cenário 2 (Static):</strong> Compressão fixa com SDT (t=5s) + Huffman, intervalos de coleta estáticos de 15s.</li>
+                    <li><strong>Cenário 3 (ViSPAC):</strong> Compressão adaptativa com algoritmos de backoff exponencial e vigilância contínua, intervalos dinâmicos por nível de risco.</li>
+                    <li><strong>Agregação:</strong> Todas as métricas são médias ponderadas sobre todos os pacientes e dispositivos Edge durante todo o período de experimento.</li>
+                    <li><strong>Baseline para Comparação:</strong> O Cenário 1 serve como referência (100% de dados brutos, latência máxima).</li>
+                </ul>
+            </div>
         </div>
     </div>
     
@@ -1655,22 +1718,11 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             
             // Populate Fog table
             fogStats.forEach((fog, idx) => {{
-                // Calculate throughput
-                let throughput = 0;
-                if (fog.timestamps && fog.timestamps.length > 1) {{
-                    const start = new Date(fog.timestamps[0]);
-                    const end = new Date(fog.timestamps[fog.timestamps.length - 1]);
-                    const seconds = (end - start) / 1000;
-                    if (seconds > 0) throughput = fog.total_batches / seconds;
-                }}
-                
                 const row = document.createElement('tr');
                 row.innerHTML = `
                     <td>${{scenarioNames[idx].replace('scenario', 'Cenário ').replace('_', ' - ')}}</td>
-                    <td>${{fog.total_batches.toLocaleString('pt-BR')}}</td>
                     <td>${{fog.avg_process_ms.toFixed(2)}}</td>
                     <td>${{fog.avg_forward_ms.toFixed(2)}}</td>
-                    <td>${{throughput.toFixed(2)}}</td>
                 `;
                 fogTableBody.appendChild(row);
             }});
@@ -1691,17 +1743,13 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
             fogStats.forEach((fog, idx) => {{
                 const cloud = cloudStats[idx];
                 
-                let batchReduction, itemReduction, latencyImprv;
+                let itemReduction, latencyImprv;
                 
                 if (idx === 0) {{
                     // Baseline - reference values
-                    batchReduction = '0.0';
                     itemReduction = '0.0';
                     latencyImprv = '0.0';
                 }} else {{
-                    batchReduction = baselineFog.total_batches > 0 
-                        ? ((1 - fog.total_batches / baselineFog.total_batches) * 100).toFixed(1) 
-                        : 'N/A';
                     itemReduction = baselineCloud.total_items > 0 
                         ? ((1 - cloud.total_items / baselineCloud.total_items) * 100).toFixed(1) 
                         : 'N/A';
@@ -1714,7 +1762,6 @@ def generate_html_dashboard(summaries: List[Dict], parsers: Dict[str, LogParser]
                 const isBaseline = idx === 0;
                 row.innerHTML = `
                     <td>${{scenarioNames[idx].replace('scenario', 'Cenário ').replace('_', ' - ')}}${{isBaseline ? ' (Referência)' : ''}}</td>
-                    <td class="${{parseFloat(batchReduction) > 0 ? 'positive' : (parseFloat(batchReduction) === 0 ? '' : 'negative')}}">${{batchReduction}}%</td>
                     <td class="${{parseFloat(itemReduction) > 0 ? 'positive' : (parseFloat(itemReduction) === 0 ? '' : 'negative')}}">${{itemReduction}}%</td>
                     <td class="${{parseFloat(latencyImprv) > 0 ? 'positive' : (parseFloat(latencyImprv) === 0 ? '' : 'negative')}}">${{latencyImprv}}%</td>
                 `;
