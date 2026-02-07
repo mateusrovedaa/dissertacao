@@ -38,7 +38,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Body, BackgroundTasks
 from pydantic import BaseModel
 import json, uvicorn, logging, time
-import os, requests
+import os, requests, threading, queue, itertools
 try:
     import paho.mqtt.client as mqtt
 except Exception:
@@ -68,11 +68,49 @@ log.setLevel(logging.INFO)
 # MQTT client storage
 mqtt_client = None
 
+# Async cloud forwarding (enabled via ASYNC_FORWARD=true for ViSPAC scenario)
+ASYNC_FORWARD = os.environ.get("ASYNC_FORWARD", "false").lower() == "true"
+RISK_PRIORITY = {"HIGH": 0, "MODERATE": 1, "LOW": 2, "MINIMAL": 3}
+_cloud_queue = queue.PriorityQueue()
+_queue_counter = itertools.count()
+
+
+def _cloud_forward_worker():
+    """Background worker that drains the priority queue and forwards to cloud.
+    Items with higher clinical risk (lower priority number) are sent first."""
+    base = os.environ.get("CLOUD_BASE_URL", "http://127.0.0.1:9000")
+    while True:
+        priority, _seq, risk, items = _cloud_queue.get()
+        if items is None:  # shutdown sentinel
+            break
+        path = risk.lower()
+        url = f"{base}/cloud/ingest/{path}"
+        log.info(f"[QUEUE] Forwarding {len(items)} items to cloud ({risk})")
+        try:
+            requests.post(url, json=items, timeout=10)
+            log.info(f"[QUEUE] Successfully forwarded {len(items)} items ({risk})")
+        except Exception as e:
+            log.error(f"[QUEUE] Failed to forward to cloud {url}: {e}")
+        _cloud_queue.task_done()
+
+
+def _enqueue_for_cloud(grouped: DefaultDict[str, List[Dict[str, Any]]]):
+    """Enqueue items into the priority queue, ordered by clinical risk."""
+    for risk, items in grouped.items():
+        if items:
+            _cloud_queue.put((RISK_PRIORITY.get(risk, 3), next(_queue_counter), risk, items))
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context for MQTT listener initialization"""
-    global mqtt_client
-    # Startup: Initialize MQTT listener
+    global mqtt_client, _cloud_worker
+    _cloud_worker = None
+    # Startup: Initialize cloud forwarding worker if async mode
+    if ASYNC_FORWARD:
+        _cloud_worker = threading.Thread(target=_cloud_forward_worker, daemon=True)
+        _cloud_worker.start()
+        log.info("[QUEUE] Cloud priority queue worker started (async mode)")
+    # Initialize MQTT listener
     if mqtt is not None:
         broker = os.environ.get('MQTT_BROKER','127.0.0.1')
         port = int(os.environ.get('MQTT_PORT','1883'))
@@ -104,23 +142,26 @@ async def lifespan(app: FastAPI):
                         client.publish(reply_topic, json.dumps({'error': str(e)}))
                     return
                 
-                # forward to cloud
-                fwd_start = time.time()
-                _forward_to_cloud(to_cloud)
-                fwd_duration = (time.time() - fwd_start) * 1000
-                
-                # Total pipeline latency for this batch
-                total_duration = (time.time() - start_time) * 1000
-                
-                # Log structured metrics for analysis
-                log.info(f"[FOG_METRICS] type=mqtt batch_size={len(scores)} process_ms={process_duration:.2f} forward_ms={fwd_duration:.2f} total_ms={total_duration:.2f}")
-                
-                # respond
-                if reply_topic:
-                    client.publish(reply_topic, json.dumps({'scores': scores}))
-                    log.info(f"[MQTT] Sent response to {reply_topic}: {len(scores)} scores")
-                    for handler in log.handlers:
-                        handler.flush()
+                if ASYNC_FORWARD:
+                    # ViSPAC: respond to edge immediately, then enqueue for cloud
+                    if reply_topic:
+                        client.publish(reply_topic, json.dumps({'scores': scores}))
+                        log.info(f"[MQTT] Sent response to {reply_topic}: {len(scores)} scores")
+                    _enqueue_for_cloud(to_cloud)
+                    total_duration = (time.time() - start_time) * 1000
+                    log.info(f"[FOG_METRICS] type=mqtt batch_size={len(scores)} process_ms={process_duration:.2f} forward_ms=0.00 total_ms={total_duration:.2f}")
+                else:
+                    # Baseline: forward to cloud synchronously, then respond
+                    fwd_start = time.time()
+                    _forward_to_cloud(to_cloud)
+                    fwd_duration = (time.time() - fwd_start) * 1000
+                    total_duration = (time.time() - start_time) * 1000
+                    log.info(f"[FOG_METRICS] type=mqtt batch_size={len(scores)} process_ms={process_duration:.2f} forward_ms={fwd_duration:.2f} total_ms={total_duration:.2f}")
+                    if reply_topic:
+                        client.publish(reply_topic, json.dumps({'scores': scores}))
+                        log.info(f"[MQTT] Sent response to {reply_topic}: {len(scores)} scores")
+                for handler in log.handlers:
+                    handler.flush()
             except Exception as e:
                 log.error(f"MQTT handler error: {e}")
                 for handler in log.handlers:
@@ -139,11 +180,15 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # Shutdown: Cleanup MQTT client
+    # Shutdown: Cleanup MQTT client and cloud worker
     if mqtt_client:
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
         log.info("MQTT listener stopped")
+    if _cloud_worker and _cloud_worker.is_alive():
+        _cloud_queue.put((99, 0, "", None))  # shutdown sentinel
+        _cloud_worker.join(timeout=5)
+        log.info("[QUEUE] Cloud priority queue worker stopped")
 
 app = FastAPI(title="ViSPAC Scoring & Decompression API v2", lifespan=lifespan)
 

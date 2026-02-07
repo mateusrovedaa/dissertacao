@@ -467,6 +467,7 @@ resource "aws_instance" "fog" {
     git_repo            = var.git_repo_url
     git_branch          = var.git_branch
     experiment_duration = var.experiment_duration_hours
+    scenario            = var.scenario
   })
 
   tags = {

@@ -11,6 +11,14 @@ CLOUD_URL="${cloud_url}"
 GIT_REPO="${git_repo}"
 GIT_BRANCH="${git_branch}"
 EXPERIMENT_DURATION="${experiment_duration}"
+SCENARIO="${scenario}"
+
+# Async cloud forwarding with priority queues (ViSPAC scenario only)
+if [ "$SCENARIO" = "scenario3_vispac" ]; then
+    ASYNC_FORWARD="true"
+else
+    ASYNC_FORWARD="false"
+fi
 
 LOG_FILE="/var/log/vispac-fog-setup.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -71,6 +79,7 @@ WorkingDirectory=/home/vispac/app
 Environment="MQTT_BROKER=127.0.0.1"
 Environment="MQTT_PORT=1883"
 Environment="CLOUD_BASE_URL=$CLOUD_URL"
+Environment="ASYNC_FORWARD=$ASYNC_FORWARD"
 ExecStart=/home/vispac/app/venv/bin/python news2_api.py
 
 # Restart policy
