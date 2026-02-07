@@ -65,6 +65,7 @@ import os
 import uuid
 import signal
 import sys
+import hashlib
 import pandas as pd
 import numpy as np
 import psutil
@@ -457,83 +458,52 @@ SAMPLE_DATA=[(80,98),(81,98),(80,99),(82,98),(83,98),(82,97),(85,98),(84,98),(86
 
 def load_datasets():
     """
-    Load datasets based on HIGH_PATIENTS, LOW_PATIENTS, or SPECIFIC_PATIENTS configuration.
-    Returns a dict with loaded DataFrames and selected patient IDs.
-    
-    Uses EDGE_ID as seed for reproducible random selection - same edge
-    always gets the same patients across experiment runs.
-    
-    If SPECIFIC_PATIENTS is set, uses those exact patient IDs from high_risk dataset.
+    Load datasets based on SPECIFIC_PATIENTS, LOW_SPECIFIC_PATIENTS,
+    HIGH_PATIENTS and LOW_PATIENTS configuration.
+
+    Priority: specific IDs > random selection by count.
+    Both specific_patients (high-risk) and low_specific_patients (low-risk)
+    can be set simultaneously for mixed edges.
     """
     datasets = {}
     selected_patients = []
-    
+
     # Set seed based on EDGE_ID for reproducible patient selection
-    # This ensures the same edge always gets the same patients
-    seed_value = hash(EDGE_ID) % (2**32)
+    # Uses hashlib (deterministic) instead of hash() which is randomized per-process since Python 3.3
+    seed_value = int(hashlib.sha256(EDGE_ID.encode()).hexdigest(), 16) % (2**32)
     random.seed(seed_value)
     log.info(f"Random seed set to {seed_value} (based on EDGE_ID: {EDGE_ID})")
-    
-    # If SPECIFIC_PATIENTS is set (and not 'none' or empty), use those exact IDs from high_risk dataset
-    if SPECIFIC_PATIENTS and SPECIFIC_PATIENTS.lower() not in ('none', ''):
+
+    has_specific_high = SPECIFIC_PATIENTS and SPECIFIC_PATIENTS.lower() not in ('none', '')
+    has_specific_low = LOW_SPECIFIC_PATIENTS and LOW_SPECIFIC_PATIENTS.lower() not in ('none', '')
+
+    # --- High-risk patients: specific IDs or random selection ---
+    if has_specific_high:
         high_path = DATASET_PATHS["high_risk"]
         if not os.path.exists(high_path):
-            log.error(f"❌ High-risk dataset not found: {high_path}")
             raise FileNotFoundError(f"Dataset not found: {high_path}")
-        
+
         high_df = pd.read_csv(high_path)
         datasets["high_risk"] = high_df
-        
-        # Parse specific patient IDs
+
         specific_ids = [int(pid.strip()) for pid in SPECIFIC_PATIENTS.split(",") if pid.strip()]
         available_ids = list(high_df['patient_id'].unique())
-        
+
         for pid in specific_ids:
             if pid in available_ids:
                 selected_patients.append({"id": str(pid), "dataset": "high_risk", "df": high_df})
             else:
                 log.warning(f"Patient ID {pid} not found in high_risk dataset")
-        
+
         log.info(f"SPECIFIC_PATIENTS mode: using patient IDs {specific_ids}")
-        log.info(f"  High-variability patients for risk change demonstration")
-        return datasets, selected_patients
-    
-    # If LOW_SPECIFIC_PATIENTS is set, use those exact IDs from low_risk dataset
-    if LOW_SPECIFIC_PATIENTS and LOW_SPECIFIC_PATIENTS.lower() not in ('none', ''):
-        low_path = DATASET_PATHS["low_risk"]
-        if not os.path.exists(low_path):
-            log.error(f"❌ Low-risk dataset not found: {low_path}")
-            raise FileNotFoundError(f"Dataset not found: {low_path}")
-        
-        low_df = pd.read_csv(low_path)
-        datasets["low_risk"] = low_df
-        
-        # Parse specific patient IDs
-        specific_ids = [int(pid.strip()) for pid in LOW_SPECIFIC_PATIENTS.split(",") if pid.strip()]
-        available_ids = list(low_df['patient_id'].unique())
-        
-        for pid in specific_ids:
-            if pid in available_ids:
-                selected_patients.append({"id": str(pid), "dataset": "low_risk", "df": low_df})
-            else:
-                log.warning(f"Patient ID {pid} not found in low_risk dataset")
-        
-        log.info(f"LOW_SPECIFIC_PATIENTS mode: using patient IDs {specific_ids}")
-        log.info(f"  Stable patients for 6h max backoff demonstration")
-        return datasets, selected_patients
-    
-    # Load high_risk dataset if needed
-    if HIGH_PATIENTS > 0:
+    elif HIGH_PATIENTS > 0:
         high_path = DATASET_PATHS["high_risk"]
         if not os.path.exists(high_path):
-            log.error(f"❌ High-risk dataset not found: {high_path}")
-            log.error("Run: python download_bidmc_data.py")
             raise FileNotFoundError(f"Dataset not found: {high_path}")
-        
+
         high_df = pd.read_csv(high_path)
         datasets["high_risk"] = high_df
-        
-        # Get available patient IDs, sort for consistency, then randomly select
+
         if 'patient_id' in high_df.columns:
             available_ids = sorted(high_df['patient_id'].unique())
             if len(available_ids) < HIGH_PATIENTS:
@@ -541,25 +511,40 @@ def load_datasets():
                 selected_high = available_ids
             else:
                 selected_high = random.sample(available_ids, HIGH_PATIENTS)
-            
+
             for pid in selected_high:
                 selected_patients.append({"id": str(pid), "dataset": "high_risk", "df": high_df})
-            
+
             log.info(f"High-risk dataset loaded: {high_path}")
             log.info(f"  Selected {len(selected_high)} patients: {selected_high}")
-    
-    # Load low_risk dataset if needed
-    if LOW_PATIENTS > 0:
+
+    # --- Low-risk patients: specific IDs or random selection ---
+    if has_specific_low:
         low_path = DATASET_PATHS["low_risk"]
         if not os.path.exists(low_path):
-            log.error(f"❌ Low-risk dataset not found: {low_path}")
-            log.error("Download from Kaggle and process")
             raise FileNotFoundError(f"Dataset not found: {low_path}")
-        
+
         low_df = pd.read_csv(low_path)
         datasets["low_risk"] = low_df
-        
-        # Get available patient IDs, sort for consistency, then randomly select
+
+        specific_ids = [int(pid.strip()) for pid in LOW_SPECIFIC_PATIENTS.split(",") if pid.strip()]
+        available_ids = list(low_df['patient_id'].unique())
+
+        for pid in specific_ids:
+            if pid in available_ids:
+                selected_patients.append({"id": str(pid), "dataset": "low_risk", "df": low_df})
+            else:
+                log.warning(f"Patient ID {pid} not found in low_risk dataset")
+
+        log.info(f"LOW_SPECIFIC_PATIENTS mode: using patient IDs {specific_ids}")
+    elif LOW_PATIENTS > 0:
+        low_path = DATASET_PATHS["low_risk"]
+        if not os.path.exists(low_path):
+            raise FileNotFoundError(f"Dataset not found: {low_path}")
+
+        low_df = pd.read_csv(low_path)
+        datasets["low_risk"] = low_df
+
         if 'patient_id' in low_df.columns:
             available_ids = sorted(low_df['patient_id'].unique())
             if len(available_ids) < LOW_PATIENTS:
@@ -567,13 +552,13 @@ def load_datasets():
                 selected_low = available_ids
             else:
                 selected_low = random.sample(available_ids, LOW_PATIENTS)
-            
+
             for pid in selected_low:
                 selected_patients.append({"id": str(pid), "dataset": "low_risk", "df": low_df})
-            
+
             log.info(f"Low-risk dataset loaded: {low_path}")
             log.info(f"  Selected {len(selected_low)} patients: {selected_low}")
-    
+
     return datasets, selected_patients
 
 def load_patient_specific_data(patient_id, full_df):
