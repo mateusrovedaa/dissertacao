@@ -1118,6 +1118,7 @@ def send_batch(batch_info):
             if ca_cert and os.path.exists(ca_cert):
                 import ssl
                 client.tls_set(ca_certs=ca_cert, tls_version=ssl.PROTOCOL_TLS)
+                client.tls_insecure_set(True)  # Skip hostname check (dynamic IP)
             
             broker = os.environ.get('MQTT_BROKER','127.0.0.1')
             port = int(os.environ.get('MQTT_PORT','1883'))

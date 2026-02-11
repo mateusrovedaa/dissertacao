@@ -121,6 +121,7 @@ async def lifespan(app: FastAPI):
         if ca_cert and os.path.exists(ca_cert):
             import ssl
             mqtt_client.tls_set(ca_certs=ca_cert, tls_version=ssl.PROTOCOL_TLS)
+            mqtt_client.tls_insecure_set(True)  # Skip hostname check (dynamic IP)
             log.info(f"MQTT TLS enabled with CA: {ca_cert}")
         
         def on_message(client, userdata, message):
