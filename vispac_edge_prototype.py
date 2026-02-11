@@ -1112,6 +1112,13 @@ def send_batch(batch_info):
 
             client = mqtt.Client()
             client.on_message = _on_message
+            
+            # Configure TLS if CA certificate is provided
+            ca_cert = os.environ.get('MQTT_CA_CERT')
+            if ca_cert and os.path.exists(ca_cert):
+                import ssl
+                client.tls_set(ca_certs=ca_cert, tls_version=ssl.PROTOCOL_TLS)
+            
             broker = os.environ.get('MQTT_BROKER','127.0.0.1')
             port = int(os.environ.get('MQTT_PORT','1883'))
             client.connect(broker, port, 60)

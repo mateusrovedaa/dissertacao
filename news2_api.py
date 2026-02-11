@@ -116,6 +116,13 @@ async def lifespan(app: FastAPI):
         port = int(os.environ.get('MQTT_PORT','1883'))
         mqtt_client = mqtt.Client()
         
+        # Configure TLS if CA certificate is provided
+        ca_cert = os.environ.get('MQTT_CA_CERT')
+        if ca_cert and os.path.exists(ca_cert):
+            import ssl
+            mqtt_client.tls_set(ca_certs=ca_cert, tls_version=ssl.PROTOCOL_TLS)
+            log.info(f"MQTT TLS enabled with CA: {ca_cert}")
+        
         def on_message(client, userdata, message):
             try:
                 data = json.loads(message.payload.decode())

@@ -5,8 +5,10 @@ services:
     restart: unless-stopped
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./certs:/mosquitto/certs:ro
     ports:
       - "1883:1883"
+      - "8883:8883"
   db:
     image: postgres:17
     environment:
@@ -44,7 +46,8 @@ services:
     environment:
       CLOUD_BASE_URL: http://cloud:9000
       MQTT_BROKER: mqtt
-      MQTT_PORT: 1883
+      MQTT_PORT: 8883
+      MQTT_CA_CERT: /app/certs/ca.crt
     depends_on:
       - cloud
       - mqtt
@@ -52,6 +55,7 @@ services:
       - "8000:8000"
     volumes:
       - ./logs:/app/logs
+      - ./certs/ca.crt:/app/certs/ca.crt:ro
 
   edge:
     build:
@@ -65,9 +69,11 @@ services:
       API_URL: http://fog:8000/vispac/upload_batch
       EDGE_USE_MQTT: "1"
       MQTT_BROKER: mqtt
-      MQTT_PORT: 1883
+      MQTT_PORT: 8883
+      MQTT_CA_CERT: /app/certs/ca.crt
     depends_on:
       - fog
       - mqtt
     volumes:
       - ./logs:/app/logs
+      - ./certs/ca.crt:/app/certs/ca.crt:ro

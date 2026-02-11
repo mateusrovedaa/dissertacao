@@ -122,8 +122,9 @@ Environment="LOW_PATIENTS=$LOW_PATIENTS"
 Environment="SPECIFIC_PATIENTS=$SPECIFIC_PATIENTS"
 Environment="LOW_SPECIFIC_PATIENTS=$LOW_SPECIFIC_PATIENTS"
 Environment="MQTT_BROKER=$MQTT_BROKER"
-Environment="MQTT_PORT=1883"
+Environment="MQTT_PORT=8883"
 Environment="EDGE_USE_MQTT=1"
+Environment="MQTT_CA_CERT=/home/vispac/mqtt_ca.crt"
 Environment="SCENARIO=$SCENARIO"
 ExecStart=/home/vispac/app/venv/bin/python vispac_edge_prototype.py
 
@@ -152,14 +153,27 @@ chown vispac:vispac /var/log/vispac-edge.log /var/log/vispac-edge-error.log
 systemctl daemon-reload
 systemctl enable vispac-edge
 
-# Wait for fog to be ready before starting
-echo "Waiting for Fog service to be ready..."
-for i in {1..60}; do
-    if nc -z "$MQTT_BROKER" 1883 2>/dev/null; then
-        echo "Fog MQTT broker is ready!"
+# Copy CA certificate from Fog instance
+echo "Retrieving MQTT CA certificate from Fog..."
+for i in {1..30}; do
+    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+        ubuntu@"$MQTT_BROKER":/home/vispac/mqtt_ca.crt /home/vispac/mqtt_ca.crt 2>/dev/null; then
+        chown vispac:vispac /home/vispac/mqtt_ca.crt
+        echo "CA certificate retrieved successfully."
         break
     fi
-    echo "Waiting for MQTT broker... ($i/60)"
+    echo "Waiting for CA certificate... ($i/30)"
+    sleep 10
+done
+
+# Wait for fog to be ready before starting
+echo "Waiting for Fog MQTTS service to be ready..."
+for i in {1..60}; do
+    if nc -z "$MQTT_BROKER" 8883 2>/dev/null; then
+        echo "Fog MQTTS broker is ready!"
+        break
+    fi
+    echo "Waiting for MQTTS broker... ($i/60)"
     sleep 5
 done
 
@@ -170,7 +184,7 @@ echo "Edge setup complete!"
 echo "Edge ID: $EDGE_ID"
 echo "High Patients: $HIGH_PATIENTS"
 echo "Low Patients: $LOW_PATIENTS"
-echo "MQTT Broker: $MQTT_BROKER:1883"
+echo "MQTT Broker: $MQTT_BROKER:8883 (TLS)"
 echo "Memory Limit: $${MEMORY_LIMIT_MB}MB"
 echo "CPU Limit: $${CPU_LIMIT_PERCENT}%"
 echo "Experiment Duration: $${EXPERIMENT_DURATION}h"

@@ -301,6 +301,14 @@ resource "aws_security_group" "fog" {
     cidr_blocks = [var.edge_subnet_cidr]
   }
 
+  # MQTTS (TLS) from Edge subnet
+  ingress {
+    from_port   = 8883
+    to_port     = 8883
+    protocol    = "tcp"
+    cidr_blocks = [var.edge_subnet_cidr]
+  }
+
   # HTTP API from Edge subnet
   ingress {
     from_port   = 8000

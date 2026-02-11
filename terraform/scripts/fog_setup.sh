@@ -32,9 +32,64 @@ echo "======================================"
 apt-get update
 apt-get install -y git python3 python3-pip python3-venv mosquitto mosquitto-clients netcat-openbsd
 
-# Configure Mosquitto MQTT Broker
+# Generate TLS certificates for MQTT
+echo "Generating TLS certificates for MQTT..."
+CERTS_DIR="/etc/mosquitto/certs"
+mkdir -p "$CERTS_DIR"
+
+cat > "$CERTS_DIR/ca_ext.cnf" <<CAEOF
+[req]
+distinguished_name = req_dn
+x509_extensions = v3_ca
+prompt = no
+[req_dn]
+CN = ViSPAC-MQTT-CA
+[v3_ca]
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+CAEOF
+
+openssl genrsa -out "$CERTS_DIR/ca.key" 2048
+openssl req -new -x509 -days 365 -key "$CERTS_DIR/ca.key" \
+    -out "$CERTS_DIR/ca.crt" -config "$CERTS_DIR/ca_ext.cnf"
+rm -f "$CERTS_DIR/ca_ext.cnf"
+openssl genrsa -out "$CERTS_DIR/server.key" 2048
+openssl req -new -key "$CERTS_DIR/server.key" \
+    -out "$CERTS_DIR/server.csr" -subj "/CN=mqtt"
+
+cat > "$CERTS_DIR/server_ext.cnf" <<EXTEOF
+[v3_req]
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = mqtt
+DNS.2 = localhost
+IP.1  = 127.0.0.1
+EXTEOF
+
+openssl x509 -req -in "$CERTS_DIR/server.csr" \
+    -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" \
+    -CAcreateserial -out "$CERTS_DIR/server.crt" \
+    -days 365 -extfile "$CERTS_DIR/server_ext.cnf" -extensions v3_req
+rm -f "$CERTS_DIR/server.csr" "$CERTS_DIR/server_ext.cnf" "$CERTS_DIR/ca.srl"
+chmod 644 "$CERTS_DIR/ca.crt" "$CERTS_DIR/server.crt"
+chmod 600 "$CERTS_DIR/ca.key" "$CERTS_DIR/server.key"
+chown -R mosquitto:mosquitto "$CERTS_DIR"
+
+# Copy CA cert for app to use
+cp "$CERTS_DIR/ca.crt" /home/vispac/mqtt_ca.crt 2>/dev/null || true
+
+# Configure Mosquitto MQTT Broker (plain + TLS)
 cat > /etc/mosquitto/conf.d/vispac.conf << 'EOF'
 listener 1883 0.0.0.0
+allow_anonymous true
+max_queued_messages 10000
+max_packet_size 1048576
+
+listener 8883 0.0.0.0
+cafile /etc/mosquitto/certs/ca.crt
+certfile /etc/mosquitto/certs/server.crt
+keyfile /etc/mosquitto/certs/server.key
 allow_anonymous true
 max_queued_messages 10000
 max_packet_size 1048576
@@ -77,7 +132,8 @@ Type=simple
 User=vispac
 WorkingDirectory=/home/vispac/app
 Environment="MQTT_BROKER=127.0.0.1"
-Environment="MQTT_PORT=1883"
+Environment="MQTT_PORT=8883"
+Environment="MQTT_CA_CERT=/home/vispac/mqtt_ca.crt"
 Environment="CLOUD_BASE_URL=$CLOUD_URL"
 Environment="ASYNC_FORWARD=$ASYNC_FORWARD"
 ExecStart=/home/vispac/app/venv/bin/python news2_api.py
@@ -119,7 +175,7 @@ systemctl start vispac-fog
 
 echo "======================================"
 echo "Fog setup complete!"
-echo "MQTT Broker: 0.0.0.0:1883"
+echo "MQTT Broker: 0.0.0.0:1883 (plain) + 0.0.0.0:8883 (TLS)"
 echo "NEWS2 API: 0.0.0.0:8000"
 echo "Cloud URL: $CLOUD_URL"
 echo "Experiment Duration: $${EXPERIMENT_DURATION}h"
