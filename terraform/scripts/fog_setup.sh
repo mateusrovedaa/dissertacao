@@ -57,8 +57,6 @@ chmod 644 "$CERTS_DIR/ca.crt" "$CERTS_DIR/server.crt"
 chmod 600 "$CERTS_DIR/ca.key" "$CERTS_DIR/server.key"
 chown -R mosquitto:mosquitto "$CERTS_DIR"
 
-# Copy CA cert for the fog app to use
-cp "$CERTS_DIR/ca.crt" /home/vispac/mqtt_ca.crt 2>/dev/null || true
 
 # Configure Mosquitto MQTT Broker (plain + TLS)
 cat > /etc/mosquitto/conf.d/vispac.conf << 'EOF'
@@ -81,6 +79,10 @@ systemctl restart mosquitto
 
 # Create app user
 useradd -m -s /bin/bash vispac || true
+
+# Copy CA cert for the fog app to use (must be after user creation)
+cp /etc/mosquitto/certs/ca.crt /home/vispac/mqtt_ca.crt
+chown vispac:vispac /home/vispac/mqtt_ca.crt
 
 # Clone repository
 cd /home/vispac
