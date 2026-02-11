@@ -153,18 +153,14 @@ chown vispac:vispac /var/log/vispac-edge.log /var/log/vispac-edge-error.log
 systemctl daemon-reload
 systemctl enable vispac-edge
 
-# Copy CA certificate from Fog instance
-echo "Retrieving MQTT CA certificate from Fog..."
-for i in {1..30}; do
-    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-        ubuntu@"$MQTT_BROKER":/home/vispac/mqtt_ca.crt /home/vispac/mqtt_ca.crt 2>/dev/null; then
-        chown vispac:vispac /home/vispac/mqtt_ca.crt
-        echo "CA certificate retrieved successfully."
-        break
-    fi
-    echo "Waiting for CA certificate... ($i/30)"
-    sleep 10
-done
+# Install MQTT CA certificate (provided by Terraform)
+echo "Installing MQTT CA certificate..."
+cat > /home/vispac/mqtt_ca.crt << 'CERTEOF'
+${mqtt_ca_cert}
+CERTEOF
+chown vispac:vispac /home/vispac/mqtt_ca.crt
+chmod 644 /home/vispac/mqtt_ca.crt
+echo "CA certificate installed."
 
 # Wait for fog to be ready before starting
 echo "Waiting for Fog MQTTS service to be ready..."

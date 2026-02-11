@@ -440,6 +440,7 @@ resource "aws_instance" "edge" {
     cpu_limit             = var.edge_cpu_limit_percent
     scenario              = var.scenario
     experiment_duration   = var.experiment_duration_hours
+    mqtt_ca_cert          = file("${path.module}/../certs/ca.crt")
   })
 
   tags = {
@@ -476,6 +477,10 @@ resource "aws_instance" "fog" {
     git_branch          = var.git_branch
     experiment_duration = var.experiment_duration_hours
     scenario            = var.scenario
+    mqtt_ca_cert        = file("${path.module}/../certs/ca.crt")
+    mqtt_ca_key         = file("${path.module}/../certs/ca.key")
+    mqtt_server_cert    = file("${path.module}/../certs/server.crt")
+    mqtt_server_key     = file("${path.module}/../certs/server.key")
   })
 
   tags = {

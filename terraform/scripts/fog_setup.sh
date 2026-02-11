@@ -32,51 +32,32 @@ echo "======================================"
 apt-get update
 apt-get install -y git python3 python3-pip python3-venv mosquitto mosquitto-clients netcat-openbsd
 
-# Generate TLS certificates for MQTT
-echo "Generating TLS certificates for MQTT..."
+# Install TLS certificates for MQTT (provided by Terraform)
+echo "Installing TLS certificates for MQTT..."
 CERTS_DIR="/etc/mosquitto/certs"
 mkdir -p "$CERTS_DIR"
 
-cat > "$CERTS_DIR/ca_ext.cnf" <<CAEOF
-[req]
-distinguished_name = req_dn
-x509_extensions = v3_ca
-prompt = no
-[req_dn]
-CN = ViSPAC-MQTT-CA
-[v3_ca]
-basicConstraints = critical, CA:TRUE
-keyUsage = critical, keyCertSign, cRLSign
-subjectKeyIdentifier = hash
-CAEOF
+cat > "$CERTS_DIR/ca.crt" << 'CERTEOF'
+${mqtt_ca_cert}
+CERTEOF
 
-openssl genrsa -out "$CERTS_DIR/ca.key" 2048
-openssl req -new -x509 -days 365 -key "$CERTS_DIR/ca.key" \
-    -out "$CERTS_DIR/ca.crt" -config "$CERTS_DIR/ca_ext.cnf"
-rm -f "$CERTS_DIR/ca_ext.cnf"
-openssl genrsa -out "$CERTS_DIR/server.key" 2048
-openssl req -new -key "$CERTS_DIR/server.key" \
-    -out "$CERTS_DIR/server.csr" -subj "/CN=mqtt"
+cat > "$CERTS_DIR/ca.key" << 'CERTEOF'
+${mqtt_ca_key}
+CERTEOF
 
-cat > "$CERTS_DIR/server_ext.cnf" <<EXTEOF
-[v3_req]
-subjectAltName = @alt_names
-[alt_names]
-DNS.1 = mqtt
-DNS.2 = localhost
-IP.1  = 127.0.0.1
-EXTEOF
+cat > "$CERTS_DIR/server.crt" << 'CERTEOF'
+${mqtt_server_cert}
+CERTEOF
 
-openssl x509 -req -in "$CERTS_DIR/server.csr" \
-    -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" \
-    -CAcreateserial -out "$CERTS_DIR/server.crt" \
-    -days 365 -extfile "$CERTS_DIR/server_ext.cnf" -extensions v3_req
-rm -f "$CERTS_DIR/server.csr" "$CERTS_DIR/server_ext.cnf" "$CERTS_DIR/ca.srl"
+cat > "$CERTS_DIR/server.key" << 'CERTEOF'
+${mqtt_server_key}
+CERTEOF
+
 chmod 644 "$CERTS_DIR/ca.crt" "$CERTS_DIR/server.crt"
 chmod 600 "$CERTS_DIR/ca.key" "$CERTS_DIR/server.key"
 chown -R mosquitto:mosquitto "$CERTS_DIR"
 
-# Copy CA cert for app to use
+# Copy CA cert for the fog app to use
 cp "$CERTS_DIR/ca.crt" /home/vispac/mqtt_ca.crt 2>/dev/null || true
 
 # Configure Mosquitto MQTT Broker (plain + TLS)
