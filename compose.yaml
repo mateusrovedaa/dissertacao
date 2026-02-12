@@ -18,7 +18,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vispac -d vispac"]
+      test: [ "CMD-SHELL", "pg_isready -U vispac -d vispac" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -46,8 +46,8 @@ services:
     environment:
       CLOUD_BASE_URL: http://cloud:9000
       MQTT_BROKER: mqtt
-      MQTT_PORT: 8883
-      MQTT_CA_CERT: /app/certs/ca.crt
+      MQTT_PORT: 1883
+    #      MQTT_CA_CERT: /app/certs/ca.crt
     depends_on:
       - cloud
       - mqtt
@@ -55,7 +55,7 @@ services:
       - "8000:8000"
     volumes:
       - ./logs:/app/logs
-      - ./certs/ca.crt:/app/certs/ca.crt:ro
+  #      - ./certs/ca.crt:/app/certs/ca.crt:ro
 
   edge:
     build:
@@ -63,17 +63,18 @@ services:
       target: edge
     command: python vispac_edge_prototype.py
     environment:
-      HIGH_PATIENTS: ${HIGH_PATIENTS:-2}   # Number of high-risk patients (random selection)
-      LOW_PATIENTS: ${LOW_PATIENTS:-3}     # Number of low-risk patients (random selection)
-      SCENARIO: ${SCENARIO:-scenario3_vispac}  # Test scenario
+      HIGH_PATIENTS: ${HIGH_PATIENTS:-2} # Number of high-risk patients (random selection)
+      LOW_PATIENTS: ${LOW_PATIENTS:-3} # Number of low-risk patients (random selection)
+      SCENARIO: ${SCENARIO:-scenario3_vispac} # Test scenario
       API_URL: http://fog:8000/vispac/upload_batch
       EDGE_USE_MQTT: "1"
       MQTT_BROKER: mqtt
-      MQTT_PORT: 8883
-      MQTT_CA_CERT: /app/certs/ca.crt
+      MQTT_PORT: 1883
+    #      MQTT_CA_CERT: /app/certs/ca.crt
     depends_on:
       - fog
       - mqtt
     volumes:
       - ./logs:/app/logs
-      - ./certs/ca.crt:/app/certs/ca.crt:ro
+
+#      - ./certs/ca.crt:/app/certs/ca.crt:ro
