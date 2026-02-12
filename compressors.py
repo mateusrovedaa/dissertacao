@@ -155,7 +155,7 @@ class SwingingDoorCompressor:
         return archived
 
 # ---------------------------------------------------------------------
-# LZW – returns string in base64
+# LZW – text methods return base64; bytes methods operate on raw bytes
 # ---------------------------------------------------------------------
 class LZW:
     """Lempel-Ziv-Welch (LZW) lossless compression.
@@ -234,8 +234,65 @@ class LZW:
             w = entry
         return "".join(res)
 
+    def compress_bytes(self, data: bytes) -> bytes:
+        """Compress raw bytes using LZW algorithm.
+        
+        Operates directly on byte sequences without base64 or JSON overhead.
+        Dictionary codes are packed as 4-byte big-endian unsigned integers.
+        
+        Args:
+            data: Raw bytes to compress.
+        
+        Returns:
+            bytes: Compressed byte stream (packed uint32 codes).
+        """
+        import struct
+        dict_size = 256
+        dictionary = {bytes([i]): i for i in range(dict_size)}
+        w = b""
+        result: List[int] = []
+        for byte in data:
+            b = bytes([byte])
+            wc = w + b
+            if wc in dictionary:
+                w = wc
+            else:
+                result.append(dictionary[w])
+                dictionary[wc] = dict_size
+                dict_size += 1
+                w = b
+        if w:
+            result.append(dictionary[w])
+        return struct.pack(f'>{len(result)}I', *result)
+
+    def decompress_bytes(self, data: bytes) -> bytes:
+        """Decompress LZW-compressed bytes.
+        
+        Args:
+            data: Compressed byte stream (packed uint32 codes).
+        
+        Returns:
+            bytes: Original decompressed bytes.
+        """
+        import struct
+        if not data:
+            return b""
+        n = len(data) // 4
+        codes = list(struct.unpack(f'>{n}I', data))
+        dict_size = 256
+        dictionary = {i: bytes([i]) for i in range(dict_size)}
+        w = dictionary[codes.pop(0)]
+        res = [w]
+        for k in codes:
+            entry = dictionary[k] if k in dictionary else w + w[0:1]
+            res.append(entry)
+            dictionary[dict_size] = w + entry[0:1]
+            dict_size += 1
+            w = entry
+        return b"".join(res)
+
 # ---------------------------------------------------------------------
-# Huffman – returns {payload, codes} with payload in base64
+# Huffman – text methods use base64; bytes methods operate on raw bytes
 # ---------------------------------------------------------------------
 class Huffman:
     """Huffman coding lossless compression.
@@ -245,9 +302,9 @@ class Huffman:
     Optimal for small to medium payloads.
     
     Algorithm:
-        1. Count frequency of each character
+        1. Count frequency of each character/byte
         2. Build binary tree bottom-up:
-           - Start with leaf nodes for each character
+           - Start with leaf nodes for each symbol
            - Repeatedly merge two lowest-frequency nodes
         3. Assign codes by traversing tree (0=left, 1=right)
         4. Encode input using generated codes
@@ -256,11 +313,17 @@ class Huffman:
         - Time: O(n log n) for building tree, O(n) for encoding
         - Space: O(k) where k is alphabet size
     
-    Output Format:
+    Output Format (text methods):
         Returns dict with:
         - payload: Base64-encoded compressed bitstream
         - codes: Dict mapping characters to their Huffman codes
         - padding: Number of padding bits added to complete last byte
+    
+    Output Format (bytes methods):
+        Returns a single binary blob containing:
+        - 4 bytes: header length (uint32 big-endian)
+        - header: msgpack-encoded dict with codes and padding
+        - compressed bitstream bytes
 
     """
     
@@ -338,3 +401,83 @@ class Huffman:
                 out.append(rev[curr])
                 curr = ""
         return "".join(out)
+
+    def compress_bytes(self, data: bytes) -> bytes:
+        """Compress raw bytes using Huffman coding.
+        
+        Packs the codebook and compressed bitstream into a single binary blob:
+        [4-byte header_len][msgpack header (codes + padding)][compressed bits]
+        
+        Args:
+            data: Raw bytes to compress.
+        
+        Returns:
+            bytes: Single binary blob with embedded codebook and compressed data.
+        """
+        import struct, msgpack
+        if not data:
+            return b""
+        freq = Counter(data)
+        # Build tree using byte values (int keys)
+        heap = [[wt, [ch, ""]] for ch, wt in freq.items()]
+        heapq.heapify(heap)
+        while len(heap) > 1:
+            lo = heapq.heappop(heap)
+            hi = heapq.heappop(heap)
+            for p in lo[1:]:
+                p[1] = '0' + p[1]
+            for p in hi[1:]:
+                p[1] = '1' + p[1]
+            heapq.heappush(heap, [lo[0] + hi[0]] + lo[1:] + hi[1:])
+        tree = sorted(heapq.heappop(heap)[1:], key=lambda p: (len(p[-1]), p))
+        codes = {ch: code for ch, code in tree}
+        
+        encoded_bits = "".join(codes[b] for b in data)
+        padding = 8 - len(encoded_bits) % 8
+        if padding == 8:
+            padding = 0
+        encoded_bits += '0' * padding
+        
+        compressed = int(encoded_bits, 2).to_bytes(len(encoded_bits) // 8, 'big')
+        # Pack header: codes dict (int->str) + padding
+        header = msgpack.packb({"codes": codes, "padding": padding})
+        return struct.pack('>I', len(header)) + header + compressed
+
+    def decompress_bytes(self, data: bytes) -> bytes:
+        """Decompress Huffman-coded binary blob.
+        
+        Args:
+            data: Binary blob from compress_bytes().
+        
+        Returns:
+            bytes: Original decompressed bytes.
+        """
+        import struct, msgpack
+        if not data:
+            return b""
+        header_len = struct.unpack('>I', data[:4])[0]
+        header = msgpack.unpackb(data[4:4+header_len], strict_map_key=False)
+        compressed = data[4+header_len:]
+        
+        codes = header[b"codes"] if b"codes" in header else header["codes"]
+        padding = header[b"padding"] if b"padding" in header else header["padding"]
+        
+        # Build reverse lookup: bitcode string -> byte value
+        rev = {}
+        for k, v in codes.items():
+            byte_val = k if isinstance(k, int) else ord(k)
+            code_str = v if isinstance(v, str) else v.decode()
+            rev[code_str] = byte_val
+        
+        bitstr = bin(int.from_bytes(compressed, 'big'))[2:].zfill(len(compressed) * 8)
+        if padding > 0:
+            bitstr = bitstr[:-padding]
+        
+        curr = ""
+        out = bytearray()
+        for bit in bitstr:
+            curr += bit
+            if curr in rev:
+                out.append(rev[curr])
+                curr = ""
+        return bytes(out)

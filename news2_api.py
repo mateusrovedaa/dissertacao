@@ -37,7 +37,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Body, BackgroundTasks
 from pydantic import BaseModel
-import json, uvicorn, logging, time
+import json, msgpack, uvicorn, logging, time
 import os, requests, threading, queue, itertools
 try:
     import paho.mqtt.client as mqtt
@@ -126,11 +126,14 @@ async def lifespan(app: FastAPI):
         
         def on_message(client, userdata, message):
             try:
-                data = json.loads(message.payload.decode())
-                reply_topic = data.get('reply_topic')
-                ctype = data.get('X-Compression-Type','none').lower()
-                raw_payload = data.get('payload','').encode()
-                log.info(f"[MQTT] Received message: {len(raw_payload)} bytes, compression={ctype}")
+                import struct
+                raw = message.payload
+                # Parse binary frame: [1B ctype][2B reply_topic_len][reply_topic][payload]
+                ctype_byte, reply_len = struct.unpack('>BH', raw[:3])
+                reply_topic = raw[3:3+reply_len].decode('utf-8')
+                raw_payload = raw[3+reply_len:]
+                ctype = {0: 'none', 1: 'huffman', 2: 'lzw'}.get(ctype_byte, 'none')
+                log.info(f"[MQTT] Received binary frame: {len(raw_payload)} bytes, compression={ctype}")
                 start_time = time.time()
                 for handler in log.handlers:
                     handler.flush()
@@ -483,16 +486,20 @@ async def upload_batch(req: Request, background_tasks: BackgroundTasks) -> Dict[
 
 def _process_batch_payload(ctype: str, raw_bytes: bytes):
     """Decodes the payload (same logic as HTTP endpoint) and calculates scores.
+    Supports both MessagePack (binary) and legacy JSON payloads.
     Returns (scores_dict, grouped_items_for_cloud)."""
     try:
         if ctype=="lzw":
-            payload = LZW().decompress(raw_bytes.decode())
+            payload_bytes = LZW().decompress_bytes(raw_bytes)
         elif ctype in ("huffman", "hushman"):
-            data = json.loads(raw_bytes)
-            payload = Huffman().decompress(data["payload"], data["codes"], data.get("padding", 0))
+            payload_bytes = Huffman().decompress_bytes(raw_bytes)
         else:
-            payload = raw_bytes.decode()
-        batch = json.loads(payload)
+            payload_bytes = raw_bytes
+        # Try MessagePack first, fall back to JSON for backward compatibility
+        try:
+            batch = msgpack.unpackb(payload_bytes, raw=False)
+        except Exception:
+            batch = json.loads(payload_bytes.decode())
     except Exception as e:
         raise HTTPException(400, f"Failed to decode batch: {e}")
 

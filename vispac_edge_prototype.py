@@ -58,6 +58,7 @@ Master's Dissertation - ViSPAC Project
 
 import time
 import json
+import msgpack
 import random
 import requests
 import logging
@@ -1010,7 +1011,7 @@ class Assembler:
                 q['buffer'], q['size'], q['timestamp'] = [], 0, None
         return ready
 
-def lossless(txt: str, risk: str):
+def lossless(data: bytes, risk: str):
     """Apply lossless compression to payload based on size and risk.
     
     Compression strategy:
@@ -1020,28 +1021,19 @@ def lossless(txt: str, risk: str):
         - Payload >= 32KB: LZW compression
     
     Args:
-        txt: JSON string payload to compress.
+        data: Raw bytes payload to compress (MessagePack-serialized).
         risk: Patient risk level.
     
     Returns:
         Tuple of (compressed_bytes, compression_type_header).
-        Header is 'none', 'hushman' (Huffman), or 'lzw'.
-    
-    Note:
-        'hushman' is a legacy header name for Huffman compression,
-        maintained for backward compatibility with older fog versions.
+        Header is 'none', 'huffman', or 'lzw'.
     """
-    raw = txt.encode()
-    size = len(raw)
+    size = len(data)
     if risk == 'HIGH' or size < HUFF_MIN:
-        return raw, 'none'
+        return data, 'none'
     if size < LZW_MIN:
-        # Huffman.compress returns dict with 'payload', 'codes', 'padding'
-        # We need to serialize this dict for transmission
-        return json.dumps(Huffman().compress(txt)).encode(), 'hushman'
-    # LZW.compress already returns a base64-encoded string
-    # Just encode it to bytes, no need for json.dumps
-    return LZW().compress(txt).encode(), 'lzw'
+        return Huffman().compress_bytes(data), 'huffman'
+    return LZW().compress_bytes(data), 'lzw'
 
 def send_batch(batch_info):
     """Send a batch of compressed data to the fog layer.
@@ -1066,13 +1058,13 @@ def send_batch(batch_info):
     """
     batch=batch_info['batch']; risk=batch_info['risk']
     total_raw_size = sum(p.get('raw_size', 0) for p in batch)
-    payload_str=json.dumps(batch)
-    raw_payload_size = len(payload_str.encode())
+    payload_bytes=msgpack.packb(batch)
+    raw_payload_size = len(payload_bytes)
     
     # Apply lossless compression only if compression is enabled for this scenario
     scenario_cfg = SCENARIO_CONFIG[SCENARIO]
     if scenario_cfg["compression_enabled"]:
-        payload, hdr = lossless(payload_str, risk)
+        payload, hdr = lossless(payload_bytes, risk)
         if hdr == 'none':
             if risk == 'HIGH':
                 log.info(f"  [STEP 2] Lossless Compression skipped (HIGH Risk).")
@@ -1081,8 +1073,8 @@ def send_batch(batch_info):
         else:
             log.info(f"  [STEP 2] Lossless Compression applied ({hdr}).")
     else:
-        # No compression - send raw JSON
-        payload = payload_str.encode()
+        # No compression - send raw msgpack
+        payload = payload_bytes
         hdr = 'none'
         log.info(f"  [STEP 2] Compression DISABLED (scenario: {SCENARIO})")
 
@@ -1093,16 +1085,14 @@ def send_batch(batch_info):
     if use_mqtt:
         try:
             import paho.mqtt.client as mqtt
+            import struct
             resp_topic = f"vispac/resp/{uuid.uuid4()}"
-            msg = json.dumps({
-                'edge_id': EDGE_ID,
-                'reply_topic': resp_topic, 
-                'X-Compression-Type': hdr, 
-                'payload': payload.decode(),
-                'send_timestamp': time.time()
-            })
+            # Binary MQTT frame:
+            # [1B compression_type][2B reply_topic_len][reply_topic bytes][payload bytes]
+            ctype_byte = {"none": 0, "huffman": 1, "lzw": 2}[hdr]
+            reply_bytes = resp_topic.encode('utf-8')
+            msg = struct.pack('>BH', ctype_byte, len(reply_bytes)) + reply_bytes + payload
 
-            q = []
             received = {'data': None}
             def _on_message(client, userdata, message):
                 try:
@@ -1159,7 +1149,7 @@ def send_batch(batch_info):
     try:
         headers = {
             'X-Compression-Type': hdr,
-            'Content-Type': 'application/json',
+            'Content-Type': 'application/x-msgpack',
             'X-Edge-ID': EDGE_ID,
             'X-Send-Timestamp': str(time.time())
         }
@@ -1289,7 +1279,7 @@ def main():
                 hr_interval = scenario_cfg["fixed_collection_interval"] if scenario_cfg["fixed_collection_interval"] else p.ic_fc
                 
                 if now-p.last_fc_col>=hr_interval:
-                    raw_size=len(json.dumps(p.fc_buf).encode())
+                    raw_size=len(msgpack.packb(p.fc_buf))
                     
                     # Apply compression based on scenario
                     if scenario_cfg["compression_enabled"]:
@@ -1299,7 +1289,7 @@ def main():
                         comp = p.fc_buf if p.fc_buf else None
                     
                     if comp:
-                        post_sdt_size=len(json.dumps(comp).encode())
+                        post_sdt_size=len(msgpack.packb(comp))
                         reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
                         
                         if scenario_cfg["compression_enabled"]:
@@ -1324,7 +1314,7 @@ def main():
                 spo2_interval = scenario_cfg["fixed_collection_interval"] if scenario_cfg["fixed_collection_interval"] else p.ic_spo2
                 
                 if now-p.last_spo2_col>=spo2_interval:
-                    raw_size=len(json.dumps(p.spo2_buf).encode())
+                    raw_size=len(msgpack.packb(p.spo2_buf))
                     
                     # Apply compression based on scenario
                     if scenario_cfg["compression_enabled"]:
@@ -1334,7 +1324,7 @@ def main():
                         comp = p.spo2_buf if p.spo2_buf else None
                     
                     if comp:
-                        post_sdt_size=len(json.dumps(comp).encode())
+                        post_sdt_size=len(msgpack.packb(comp))
                         reduction=100*(1-post_sdt_size/raw_size) if raw_size>0 else 0
                         
                         if scenario_cfg["compression_enabled"]:
