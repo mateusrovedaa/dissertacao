@@ -1,0 +1,26 @@
+\babel@toc {brazilian}{}\relax 
+\babel@toc {english}{}\relax 
+\babel@toc {brazilian}{}\relax 
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {1}{\ignorespaces Classificação de risco clínico baseada no escore NEWS2 agregado}}{35}{table.caption.15}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {2}{\ignorespaces Filtros e critérios de inclusão}}{40}{table.caption.17}%
+\contentsline {table}{\numberline {3}{\ignorespaces Trabalhos relacionados}}{42}{table.caption.19}%
+\contentsline {table}{\numberline {4}{\ignorespaces Síntese dos trabalhos relacionados}}{48}{table.caption.20}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {5}{\ignorespaces Valores padrão assumidos para sinais vitais não monitorados no cálculo do NEWS2}}{51}{table.caption.22}%
+\contentsline {table}{\numberline {6}{\ignorespaces Parâmetros do Algoritmo 1 e justificativa}}{61}{table.caption.28}%
+\contentsline {table}{\numberline {7}{\ignorespaces Parâmetros do ViSPAC: natureza e origem}}{65}{table.caption.31}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {8}{\ignorespaces Métricas de avaliação recorrentes na literatura sobre monitoramento remoto de saúde e compressão de dados.}}{73}{table.caption.33}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {9}{\ignorespaces Comparativo qualitativo dos cenários experimentais}}{78}{table.caption.35}%
+\contentsline {table}{\numberline {10}{\ignorespaces Métricas de desempenho globais da simulação (20 nós edge, 12 horas)}}{78}{table.caption.36}%
+\contentsline {table}{\numberline {11}{\ignorespaces Distorção PRD por nível de risco clínico}}{81}{table.caption.40}%
+\contentsline {table}{\numberline {12}{\ignorespaces Decomposição da latência média por componente e cenário}}{82}{table.caption.41}%
+\contentsline {table}{\numberline {13}{\ignorespaces Resumo consolidado por cenário de teste}}{83}{table.caption.42}%
+\contentsline {table}{\numberline {14}{\ignorespaces Comparação quantitativa entre ViSPAC e trabalhos relacionados}}{90}{table.caption.48}%
+\contentsline {table}{\numberline {15}{\ignorespaces Métricas de desempenho do nó fog no Cenário~3 (35.513 lotes, 12h)}}{92}{table.caption.49}%
+\contentsline {table}{\numberline {16}{\ignorespaces Projeção de escalabilidade do ViSPAC (encaminhamento assíncrono)}}{94}{table.caption.50}%
+\addvspace {10\p@ }

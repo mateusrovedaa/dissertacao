@@ -1,0 +1,123 @@
+\begin{thebibliography}{\hspace{\parindent}}
+
+\bibitem[ALI et~al.(2025)Ali et~al.]{ALI2025} ALI, A.; MONTANARO, T.; SERGI, I.; CARRISI, S.; GALLI, D.; DISTANTE, C.; PATRONO, L\@. An Innovative IoT and Edge Intelligence Framework for Monitoring Elderly People Using Anomaly Detection on Data from Non-Wearable Sensors. \emph{Sensors}, [S.l.], v.~25, n.~6, 2025.
+
+\bibitem[{American Heart Association}(2024){American Heart Association}]{AHA2024} {American Heart Association}. \emph{Target Heart Rates Chart}. Last reviewed 12 Aug 2024, \url{https://www.heart.org/en/healthy-living/fitness/fitness-basics/target-heart-rates}.
+
+\bibitem[ANDRADE et~al.(2025)Andrade et~al.]{Andrade2025} ANDRADE, A.; {da Costa}, C.~A.; ROEHRS, A.; MUCHALUAT-SAADE, D.; {da Rosa Righi}, R\@. Blending lossy and lossless data compression methods to support health data streaming in smart cities. \emph{Future Generation Computer Systems}, [S.l.], v.~167, p.~107748, 2025.
+
+\bibitem[{ANDRÉ SETTI CASSEL} et~al.(2024){ANDRÉ SETTI CASSEL} et~al.]{CASSEL2024} {ANDRÉ SETTI CASSEL}, G.; {da Rosa Righi}, R.; {André da Costa}, C.; {Rosecler Bez}, M.; PASIN, M\@. Towards providing a priority-based vital sign offloading in healthcare with serverless computing and a fog-cloud architecture. \emph{Future Generation Computer Systems}, [S.l.], v.~157, p.~51--66, 2024.
+
+\bibitem[ANWAR et~al.(2022)Anwar et~al.]{Anwar2022} ANWAR, M.; MASUD, F.; BUTT, R.~A.; IDRUS, S.~M.; AHMAD, M.~N.; BAJURI, M.~Y\@. Traffic Priority-Aware Medical Data Dissemination Scheme for IoT-Based WBASN Healthcare Applications. \emph{Computers, Materials \& Continua}, [S.l.], v.~71, n.~3, 2022.
+
+\bibitem[{A}{W}{S} {P}RICING {C}ALCULATOR --- CALCULATOR.AWS(2025){A}{W}{S} {P}ricing {C}alculator --- calculator.aws]{aws_pricing} {A}{W}{S} {P}ricing {C}alculator --- calculator.aws. [Accessed 19-09-2025], \url{https://calculator.aws/#/createCalculator}.
+
+\bibitem[BANKS; GUPTA(2014)Banks e Gupta]{mqtt_spec} BANKS, A.; GUPTA, R\@. \emph{MQTT Version 3.1.1}. [S.l.]: OASIS, 2014. OASIS Standard, Acessado em: 2025-05-10.
+
+\bibitem[{Beta Systems}(2025){Beta Systems}]{BetaSystems2025} {Beta Systems}. \emph{Rising Demands, Rising Challenges}: the evolution of data centers. Acessado em: 10 dez. 2025, \url{https://www.betasystems.com/resources/blog/rising-demands-rising-challenges-the-evolution-of-data-centers/}.
+
+\bibitem[BONOMI et~al.(2012)Bonomi et~al.]{bonomi2012} BONOMI, F.; MILITO, R.; ZHU, J.; ADDEPALLI, S\@. Fog computing and its role in the internet of things. In: FIRST EDITION OF THE MCC WORKSHOP ON MOBILE CLOUD COMPUTING, 2012, New York, NY, USA. \emph{Proceedings{\ldots}} Association for Computing Machinery, 2012. p.~13–16. (MCC '12).
+
+\bibitem[BRADEN(1989)Braden]{RFC1122} BRADEN, R.~T\@. \emph{{Requirements for Internet Hosts - Communication Layers}}. [S.l.]: RFC Editor, 1989. n.~1122. (Request for Comments).
+
+\bibitem[BRISTOL(1990)Bristol]{Bristol1990} BRISTOL, E.~H\@. Swinging door trending: adaptive trend recording. In: ISA NATIONAL CONFERENCE, 1990. \emph{Proceedings{\ldots}} [S.l.:~s.n.], 1990. p.~749--753.
+
+\bibitem[CHANG; SOBELMAN(2024)Chang e Sobelman]{Chang2024} CHANG, Y.; SOBELMAN, G.~E\@. Lightweight Lossy/Lossless ECG Compression for Medical IoT Systems. \emph{IEEE Internet of Things Journal}, [S.l.], v.~11, n.~7, p.~12450--12458, 2024.
+
+\bibitem[DAMERA et~al.(2025)Damera et~al.]{Damera2025} DAMERA, V.~K.; CHERIPELLI, R.; PUTTA, N.; SIRISHA, G.; KALAVALA, D\@. Enhancing remote patient monitoring with AI-driven IoMT and cloud computing technologies. \emph{Scientific Reports}, [S.l.], v.~15, n.~1, p.~24088, Jul~2025.
+
+\bibitem[DESAI(2025)Desai]{Desai2015} DESAI, R\@. \emph{Dr Rajiv Desai}. 2025.
+
+\bibitem[EDDY(2022)Eddy]{rfc9293} EDDY, W\@. \emph{{Transmission Control Protocol (TCP)}}. [S.l.]: RFC Editor, 2022. n.~9293. (Request for Comments).
+
+\bibitem[ESMAEILI; SHAMSI(2023)Esmaeili e Shamsi]{ESMAEILI2023} ESMAEILI, S.; SHAMSI, R\@. A lightweight and secure sensing model for body area networks in the Internet of Things in biological warfare applications. \emph{Internet of Things}, [S.l.], v.~22, p.~100717, 2023.
+
+\bibitem[FIELDING; NOTTINGHAM; RESCHKE(2022)Fielding, Nottingham e Reschke]{rfc9112} FIELDING, R.~T.; NOTTINGHAM, M.; RESCHKE, J\@. \emph{{HTTP/1.1}}. [S.l.]: RFC Editor, 2022. n.~9112. (Request for Comments).
+
+\bibitem[FRIESEL; SPINCZYK(2021)Friesel e Spinczyk]{Friesel2021} FRIESEL, D.; SPINCZYK, O\@. Data Serialization Formats for the Internet of Things. \emph{Electronic Communications of the EASST}, [S.l.], v.~80, 2021. Avaliação analítica de formatos de serialização binária (MessagePack, Protocol Buffers, XDR, Avro) em microcontroladores IoT de 8 a 32 bits.
+
+\bibitem[GENEVA et~al.(2019)Geneva et~al.]{Geneva2019} GENEVA, I.~I.; CUZZO, B.; FAZILI, T.; JAVAID, W\@. Normal Body Temperature: a systematic review. \emph{Open Forum Infectious Diseases}, [S.l.], v.~6, n.~4, p.~ofz032, Apr.~2019. Published 2019 Apr 9.
+
+\bibitem[GREENHALGH; KOH; CAR(2020)Greenhalgh, Koh e Car]{Greenhalghm2020} GREENHALGH, T.; KOH, G. C.~H.; CAR, J\@. Covid-19: a remote assessment in primary care. \emph{BMJ}, [S.l.], v.~368, 2020.
+
+\bibitem[GU et~al.(2026)Gu et~al.]{Gu2026} GU, B.; KIM, H.~S.; KIM, H.; YOO, J.~I\@. Advancements in Wearable Sensor Technologies for Health Monitoring in Terms of Clinical Applications, Rehabilitation, and Disease Risk Assessment: systematic review. \emph{JMIR Mhealth Uhealth}, [S.l.], v.~14, p.~e76084, jan~2026. PMID: 41511829; PMCID: PMC12831105.
+
+\bibitem[HARCHOL-BALTER(2013)Harchol-Balter]{HarcholBalter2013} HARCHOL-BALTER, M\@. \emph{Performance Modeling and Design of Computer Systems}: queueing theory in action. Cambridge: Cambridge University Press, 2013.
+
+\bibitem[HASSAN; MOHSEN(2024)Hassan e Mohsen]{Hassan2024} HASSAN, A. M.~A.; MOHSEN, S\@. Compression of electrocardiogram signals using compressive sensing technique based on curvelet transform toward medical applications. \emph{Multimedia Tools and Applications}, [S.l.], v.~84, n.~12, p.~11203--11219, 2024.
+
+\bibitem[{Internet Protocol}(1981){Internet Protocol}]{rfc791} {Internet Protocol}. [S.l.]: RFC Editor, 1981. n.~791. (Request for Comments).
+
+\bibitem[{IoT Analytics}(2025){IoT Analytics}]{IoTAnalytics2025} {IoT Analytics}. \emph{Global IoT Market Forecast}: 23.9 billion connected devices by 2026. Dados extraídos do relatório Global Cellular IoT Connectivity Tracker \& Forecast, Relatório de Mercado.
+
+\bibitem[JACOBSON(1988)Jacobson]{Jacobson1988} JACOBSON, V\@. Congestion avoidance and control. In: SYMPOSIUM PROCEEDINGS ON COMMUNICATIONS ARCHITECTURES AND PROTOCOLS, 1988, New York, NY, USA. \emph{Anais{\ldots}} Association for Computing Machinery, 1988. p.~314–329. (SIGCOMM '88).
+
+\bibitem[KADHIM; MANAA(2022)Kadhim e Manaa]{Kadhim2022} KADHIM, A.~N.; MANAA, M.~E\@. Design an efficient internet of things data compression for healthcare applications. \emph{Bulletin of Electrical Engineering and Informatics}, [S.l.], v.~11, n.~3, p.~1678--1686, 2022.
+
+\bibitem[KANEGAYE et~al.(2016)Kanegaye et~al.]{Kanegaye2016} KANEGAYE, J.~T.; JONES, J.~M.; BURNS, J.~C.; JAIN, S.; SUN, X.; JIMENEZ-FERNANDEZ, S.; BERRY, E.; PANCHERI, J.~M.; JAGGI, P.; RAMILO, O.; TREMOULET, A.~H\@. Axillary, Oral and Rectal Routes of Temperature Measurement During Treatment of Acute Kawasaki Disease. \emph{Pediatric Infectious Disease Journal}, [S.l.], v.~35, n.~1, p.~50--53, Jan.~2016.
+
+\bibitem[KIM; BAEK(2023)Kim e Baek]{KIM2023} KIM, K.~B.; BAEK, H.~J\@. Photoplethysmography in Wearable Devices: a comprehensive review of technological advances, current challenges, and future directions. \emph{Electronics}, [S.l.], v.~12, n.~13, 2023.
+
+\bibitem[KLEINROCK(1975)Kleinrock]{Kleinrock1975} KLEINROCK, L\@. \emph{Queueing Systems, Volume 1}: theory. New York: Wiley-Interscience, 1975.
+
+\bibitem[KUMAR~V.; REDDY(2021)Pulse Oximetry for the Measurement of Oxygen Saturation in Arterial Blood]{KumarV2021} BLAZEK, V.; KUMAR~V., J.; LEONHARDT, S.; MUKUNDA~RAO, M\@.~(Ed.). Pulse Oximetry for the Measurement of Oxygen Saturation in Arterial Blood. In: \_\_\_\_\_. \emph{Studies in Skin Perfusion Dynamics}: photoplethysmography and its applications in medical diagnostics. Singapore: Springer Singapore, 2021. p.~51--78.
+
+\bibitem[KWAK; ULLAH; ULLAH(2010)Kwak, Ullah e Ullah]{KWAK2010} KWAK, K.~S.; ULLAH, S.; ULLAH, N\@. An overview of IEEE 802.15.6 standard. In: INTERNATIONAL SYMPOSIUM ON APPLIED SCIENCES IN BIOMEDICAL AND COMMUNICATION TECHNOLOGIES (ISABEL 2010), 2010., 2010. \emph{Anais{\ldots}} [S.l.:~s.n.], 2010. p.~1--6.
+
+\bibitem[LI et~al.(2024)Li et~al.]{LI2024} LI, C.; WANG, J.; WANG, S.; ZHANG, Y\@. A review of IoT applications in healthcare. \emph{Neurocomputing}, [S.l.], v.~565, p.~127017, 2024.
+
+\bibitem[MELEVEEDU et~al.(2020)Meleveedu et~al.]{Meleveedu2020} MELEVEEDU, K.; MISKOVSKY, J.; MEHARG, J. et~al\@. Tocilizumab for severe COVID-19 related illness - A community academic medical center experience. \emph{Cytokine X}, [S.l.], v.~2, n.~4, p.~100035, 2020.
+
+\bibitem[MOHAPATRA et~al.(2025)Mohapatra et~al.]{MOHAPATRA2025} MOHAPATRA, A.~G.; MOHANTY, A.; NAYAK, S.; MENFASH, H.~A.; ALQAHTANI, H.; AL-SHARAEI, A.~M.; ALLAF, R.; NAFIE, F.~M\@. IoT-driven remote health monitoring system with sensor fusion enhancing immediate medical assistance in distributed settings. \emph{Alexandria Engineering Journal}, [S.l.], v.~120, p.~627--636, 2025.
+
+\bibitem[MORGAN(2025)Morgan]{CybersecurityVentures2025} MORGAN, S\@. \emph{The World Will Store 200 Zettabytes Of Data By 2025}. Acessado em: 10 dez. 2025, \url{https://cybersecurityventures.com/the-world-will-store-200-zettabytes-of-data-by-2025/}.
+
+\bibitem[NGUYEN et~al.(2026)Nguyen et~al.]{Nguyen2026} NGUYEN, N.; LEE, G.; HOLDERREAD, B.; HOLMAN, T.; PLETCHER, S.; SCHWARTZ, R\@. Scaling Wireless Continuous Vital Sign Monitoring Across an 8-Hospital Health System: digital health implementation report. \emph{JMIR Med Inform}, [S.l.], v.~14, n.~1, p.~e78216, 2026.
+
+\bibitem[{NHS England}(2025){NHS England}]{NHSEngland2025} {NHS England}. \emph{National Early Warning Score (NEWS)}. Acessado em 8 maio 2025, \url{https://www.england.nhs.uk/ourwork/clinical-policy/sepsis/nationalearlywarningscore/}.
+
+\bibitem[PARIHAR et~al.(2024)Parihar et~al.]{PARIHAR2024} PARIHAR, A.; PRAJAPATI, J.~B.; PRAJAPATI, B.~G.; TRAMBADIYA, B.; THAKKAR, A.; ENGINEER, P\@. Role of IOT in healthcare: applications, security \& privacy concerns. \emph{Intelligent Pharmacy}, [S.l.], v.~2, n.~5, p.~707--714, 2024.
+
+\bibitem[PIMENTEL et~al.(2016)Pimentel et~al.]{BIDMCDataset} PIMENTEL, M. A.~F.; JOHNSON, A. E.~W.; CHARLTON, P.~H.; BIRRENKOTT, D.; WATKINSON, P.~J.; TARASSENKO, L.; CLIFTON, D.~A\@. \emph{{BIDMC} {PPG} and Respiration Dataset}. [S.l.]: PhysioNet, 2016.
+
+\bibitem[PIMENTEL et~al.(2017)Pimentel et~al.]{Pimentel2016} PIMENTEL, M. A.~F.; JOHNSON, A. E.~W.; CHARLTON, P.~H.; BIRRENKOTT, D.; WATKINSON, P.~J.; TARASSENKO, L.; CLIFTON, D.~A\@. Toward a Robust Estimation of Respiratory Rate from Pulse Oximeters. \emph{Annals of Biomedical Engineering}, [S.l.], v.~45, n.~8, p.~1914--1927, 2017.
+
+\bibitem[REDDY et~al.(2025)Reddy et~al.]{REDDY2025} REDDY, C.; DSOUZA, V.; THANGARAJAN, A.; PAWEłCZAK, P.; KAWSAR, F.; MONTANARI, A\@. BioPulse: towards enabling perpetual vital signs monitoring using a body patch. \emph{}, [S.l.], p.~103--108, 02~2025.
+
+\bibitem[REICHL et~al.(2024)Reichl et~al.]{Reichl2024} REICHL, J.; LEIFKE, M.; WEHRLI, S. et~al\@. Pilot study for the development of an automatically generated and wearable-based early warning system for the detection of deterioration of hospitalized patients of an acute care hospital. \emph{Archives of Public Health}, [S.l.], v.~82, n.~1, p.~179, 2024. Published 2024 Oct 8.
+
+\bibitem[REINSEL; GANTZ; RYDNING(2024)Reinsel, Gantz e Rydning]{IDC2025} REINSEL, D.; GANTZ, J.; RYDNING, J\@. \emph{Worldwide IDC Global DataSphere Forecast, 2024–2028}: ai everywhere, but upsurge in data will take time. [S.l.]: International Data Corporation (IDC), 2024. Market Forecast.
+
+\bibitem[RICCALTON; THRELFALL; ANANTHAKRISHNAN(2025)Riccalton, Threlfall e Ananthakrishnan]{Riccalton2025} RICCALTON, V.; THRELFALL, L.; ANANTHAKRISHNAN, A. e.~a\@. Modifications to the National Early Warning Score 2: a scoping review. \emph{BMC Medicine}, [S.l.], v.~23, p.~154, 2025.
+
+\bibitem[ROBBEN; ENGLEBIENNE; KR{\"O}SE(2017)Robben, Englebienne e Kr{\"o}se]{Robben2017} ROBBEN, S.; ENGLEBIENNE, G.; KR{\"O}SE, B\@. Delta Features From Ambient Sensor Data are Good Predictors of Change in Functional Health. \emph{IEEE Journal of Biomedical and Health Informatics}, [S.l.], v.~21, n.~4, p.~986--993, July~2017. Epub 2016 Jul 22.
+
+\bibitem[{Royal College of Physicians}(2017){Royal College of Physicians}]{RoyalCollege2017} {Royal College of Physicians}. \emph{National Early Warning Score (NEWS) 2}: standardising the assessment of acute-illness severity in the nhs. London: Royal College of Physicians, 2017. Updated report of a working party.
+
+\bibitem[SAHU et~al.(2022)Sahu et~al.]{SAHU2022} SAHU, M.~L.; ATULKAR, M.; AHIRWAL, M.~K.; AHAMAD, A\@. Vital Sign Monitoring System for Healthcare Through IoT Based Personal Service Application. \emph{Wireless Personal Communications}, [S.l.], v.~122, n.~1, p.~129--156, 2022.
+
+\bibitem[SALOMON(2007)Salomon]{Salomon2007} SALOMON, D\@. \emph{Data Compression}: the complete reference. 4.~ed. [S.l.]: Springer, 2007.
+
+\bibitem[SHANKANI et~al.(2025)Shankani et~al.]{Shankani2025} SHANKANI, R.; KHALIFAVI, M.; SHIRMOHAMMADI, Z.; NIKOOFARD, A\@. {F$^2$multisense}: a novel approach to fuzzy fusion in multisensor data to improve saving energy in wbsn. \emph{The Journal of Supercomputing}, [S.l.], v.~81, n.~6, p.~794, 2025.
+
+\bibitem[TANENBAUM; WETHERALL(2010)Tanenbaum e Wetherall]{Tanenbaum2010} TANENBAUM, A.~S.; WETHERALL, D.~J\@. \emph{Computer Networks}. 5th.~ed. USA: Prentice Hall Press, 2010.
+
+\bibitem[TAO; WANG; QIN(2025)Tao, Wang e Qin]{TAO2025} TAO, Y.; WANG, C.; QIN, H\@. Research on Feistel Encryption Algorithm Based On Wireless Medical Sensor Networks. \emph{Procedia Computer Science}, [S.l.], v.~259, p.~888--896, 2025. Sixth International Conference on Futuristic Trends in Networks and Computing Technologies (FTNCT06), held in Uttarakhand, India.
+
+\bibitem[TOUW et~al.(2017)Touw et~al.]{Touw2017} TOUW, H.; VERHEUL, M.; TUINMAN, P. et~al\@. Photoplethysmography respiratory rate monitoring in patients receiving procedural sedation and analgesia for upper gastrointestinal endoscopy. \emph{Journal of Clinical Monitoring and Computing}, [S.l.], v.~31, n.~4, p.~747--754, 2017.
+
+\bibitem[VAKIL; SHIRMOHAMMADI(2024)Vakil e Shirmohammadi]{Vakil2024} VAKIL, M.; SHIRMOHAMMADI, Z\@. LPRLC: linear predictive run length coding to improve energy consumption of wbans. \emph{}, [S.l.], 05~2024.
+
+\bibitem[VAN~ANH; NGUYEN(2025)Van~Anh e Nguyen]{DANG2025} VAN~ANH, D.; NGUYEN, V.-H\@. Leveraging Priority Queueing in IoT-Edge-Fog-Cloud Infrastructures for Efficient Healthcare Monitoring. \emph{IEEE Access}, [S.l.], v.~13, p.~80461--80477, 2025.
+
+\bibitem[VITAZKOVA et~al.(2024)Vitazkova et~al.]{Vitazkova2024} VITAZKOVA, D.; FOLTAN, E.; KOSNACOVA, H.; MICJAN, M.; DONOVAL, M.; KUZMA, A.; KOPANI, M.; VAVRINSKY, E\@. Advances in Respiratory Monitoring: a comprehensive review of wearable and remote technologies. \emph{Biosensors}, [S.l.], v.~14, n.~2, 2024.
+
+\bibitem[WEI et~al.(2023)Wei et~al.]{Wei2023} WEI, S.; XIONG, D.; WANG, J.; LIANG, X.; WANG, J.; CHEN, Y\@. The Accuracy of the National Early Warning Score 2 in Predicting Early Death in Prehospital and Emergency Department Settings: a systematic review and meta-analysis. \emph{Annals of Translational Medicine}, [S.l.], v.~11, n.~2, p.~95, 2023.
+
+\bibitem[ZHANG et~al.(2021)Zhang et~al.]{Zhang2021} ZHANG, L.; CAO, B.; LI, Y.; PENG, M.; FENG, G\@. A Multi-Stage Stochastic Programming-Based Offloading Policy for Fog Enabled IoT-eHealth. \emph{IEEE Journal on Selected Areas in Communications}, [S.l.], v.~39, n.~2, p.~411--425, 2021.
+
+\bibitem[ZHOU et~al.(2025)Zhou et~al.]{Zhou2025} ZHOU, C.; YE, X.; WEI, Y.; {De Florio}, V.; SUN, H.; ZHAN, X.; LI, Y.; WANG, C.; ZHANG, X\@. A comprehensive evaluation of multiple video compression algorithms for preserving BVP signal quality. \emph{Biomedical Signal Processing and Control}, [S.l.], v.~103, p.~107445, 2025.
+
+\bibitem[ZIYA(2024)Ziya]{BiosensorKaggle2024} ZIYA, O\@. \emph{Biosensor Student Health Fitness Data}. Dados biométricos de estudantes universitários saudáveis, incluindo FC e SpO2, Kaggle Dataset.
+
+\end{thebibliography}
