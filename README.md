@@ -189,6 +189,7 @@ O dashboard inclui:
 | `MQTT_BROKER` | Endereço do broker | `127.0.0.1` |
 | `MQTT_PORT` | Porta do broker | `1883` |
 | `DATASET_TYPE` | Tipo de dataset | `high_risk` |
+| `ASYNC_FORWARD` | Fog responde ao Edge antes de encaminhar à Cloud (cenário 3) | `false` |
 
 ## Modelo de Dados (PostgreSQL)
 
@@ -223,16 +224,16 @@ Os experimentos de 12 horas com 20 dispositivos Edge demonstraram:
 
 | Métrica | Baseline | Static | ViSPAC |
 |---------|----------|--------|--------|
-| Transmissões | 6.726.598 | 567.108 | **120.919** |
-| Compressão (%) | 0,0 | 74,0 | **80,7** |
-| PRD (%) | 0,0 | 3,89 | **1,30** |
-| Latência (ms) | 1.380 | 1.271 | **1.199** |
+| Transmissões | 6.642.048 | 564.237 | **220.403** |
+| Compressão (%) | 0,0 | 75,1 | **87,2** |
+| PRD (%) | 0,0 | 3,62 | **1,16** |
+| Latência (ms) | 1.358 | 1.271 | **1.049** |
 
 O ViSPAC alcançou:
-- **98,2%** de redução nas transmissões vs Baseline
-- **80,7%** de taxa de compressão média
-- **1,30%** de distorção PRD (menor que Static apesar de maior compressão)
-- **98,2%** de redução no armazenamento Cloud
+- **96,7%** de redução nas transmissões vs Baseline
+- **87,2%** de taxa de compressão média
+- **1,16%** de distorção PRD (menor que Static apesar de maior compressão)
+- **81,6%** de redução no volume de dados transmitidos à Cloud
 
 ## Licença
 
